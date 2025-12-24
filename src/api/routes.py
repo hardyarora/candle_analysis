@@ -2,7 +2,7 @@
 FastAPI routes for candle analysis API.
 """
 import logging
-from fastapi import APIRouter, HTTPException, Path as PathParam, Query
+from fastapi import APIRouter, HTTPException, Path as PathParam, Query, Request
 from typing import Optional
 
 from .models import (
@@ -16,12 +16,27 @@ from .models import (
     CurrencyCategorization,
     CurrencySummaryEntry,
     StrengthWeaknessSummary,
+    HistoryRangeResponse,
+    HistorySingleResponse,
+    HistoryDatesResponse,
+    HistoricalSnapshot,
+    CaptureHistoryRequest,
+    CaptureHistoryResponse,
+    CaptureResult,
 )
 from ..core.file_manager import load_analysis, list_available_dates, save_analysis, backup_current_analysis
 from ..core.candle_analyzer import analyze_all_currencies
 from ..core.pullback import analyze_all_pullbacks, categorize_currencies_strength_weakness
+from ..core.history_storage import (
+    store_snapshot,
+    get_snapshot,
+    get_snapshots_range,
+    get_last_n_days,
+    list_dates,
+    get_latest_snapshot,
+)
 from ..utils.timeframe import normalize_timeframe, is_valid_timeframe
-from datetime import datetime
+from datetime import datetime, timedelta
 
 logger = logging.getLogger("candle_analysis_api")
 
@@ -672,3 +687,266 @@ async def run_strength_weakness_categorization(
             status_code=500,
             detail=f"Strength/weakness categorization failed: {str(e)}"
         )
+
+
+# History endpoints
+@router.get("/history/{endpoint}", response_model=HistoryRangeResponse, tags=["history"])
+async def get_history_range(
+    endpoint: str = PathParam(..., description="Endpoint identifier (e.g., 'strength_weakness_weekly')"),
+    start_date: Optional[str] = Query(None, description="Start date in YYYY-MM-DD format"),
+    end_date: Optional[str] = Query(None, description="End date in YYYY-MM-DD format"),
+    date: Optional[str] = Query(None, description="Single date in YYYY-MM-DD format (alternative to range)"),
+):
+    """
+    Get historical snapshots for an endpoint.
+    
+    Supports two modes:
+    1. Date range: Provide start_date and end_date (or omit both for last 10 days)
+    2. Single date: Provide date parameter
+    
+    Args:
+        endpoint: Endpoint identifier (e.g., "strength_weakness_weekly")
+        start_date: Start date in YYYY-MM-DD format (optional)
+        end_date: End date in YYYY-MM-DD format (optional)
+        date: Single date in YYYY-MM-DD format (optional, alternative to range)
+        
+    Returns:
+        HistoryRangeResponse with snapshots in date range, or HistorySingleResponse for single date
+        
+    Raises:
+        HTTPException: If date format is invalid or data not found
+    """
+    # Single date mode
+    if date:
+        try:
+            datetime.strptime(date, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid date format: {date}. Expected YYYY-MM-DD")
+        
+        snapshot = get_snapshot(endpoint, date)
+        if snapshot is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No snapshot found for endpoint '{endpoint}' on date {date}"
+            )
+        
+        return HistorySingleResponse(
+            endpoint=snapshot["endpoint"],
+            date=snapshot["date"],
+            timestamp=snapshot["timestamp"],
+            data=snapshot["data"]
+        )
+    
+    # Date range mode
+    if start_date and end_date:
+        try:
+            start = datetime.strptime(start_date, "%Y-%m-%d")
+            end = datetime.strptime(end_date, "%Y-%m-%d")
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid date format. Expected YYYY-MM-DD: {e}")
+        
+        if start > end:
+            raise HTTPException(
+                status_code=400,
+                detail=f"start_date ({start_date}) must be <= end_date ({end_date})"
+            )
+    elif start_date or end_date:
+        raise HTTPException(
+            status_code=400,
+            detail="Both start_date and end_date must be provided, or neither (for last 10 days)"
+        )
+    else:
+        # Default to last 10 days
+        end = datetime.now()
+        start = end - timedelta(days=9)  # 10 days inclusive
+        start_date = start.strftime("%Y-%m-%d")
+        end_date = end.strftime("%Y-%m-%d")
+    
+    snapshots = get_snapshots_range(endpoint, start_date, end_date)
+    
+    return HistoryRangeResponse(
+        endpoint=endpoint,
+        start_date=start_date,
+        end_date=end_date,
+        snapshots=[
+            HistoricalSnapshot(
+                date=s["date"],
+                timestamp=s["timestamp"],
+                data=s["data"]
+            )
+            for s in snapshots
+        ]
+    )
+
+
+@router.get("/history/{endpoint}/dates", response_model=HistoryDatesResponse, tags=["history"])
+async def get_history_dates(
+    endpoint: str = PathParam(..., description="Endpoint identifier (e.g., 'strength_weakness_weekly')")
+):
+    """
+    List all available dates for an endpoint.
+    
+    Args:
+        endpoint: Endpoint identifier
+        
+    Returns:
+        HistoryDatesResponse with list of available dates and latest date
+    """
+    dates = list_dates(endpoint)
+    latest = dates[-1] if dates else None
+    
+    return HistoryDatesResponse(
+        endpoint=endpoint,
+        dates=dates,
+        latest=latest
+    )
+
+
+@router.get("/history/{endpoint}/latest", response_model=HistorySingleResponse, tags=["history"])
+async def get_history_latest(
+    endpoint: str = PathParam(..., description="Endpoint identifier (e.g., 'strength_weakness_weekly')")
+):
+    """
+    Get the latest snapshot for an endpoint.
+    
+    Args:
+        endpoint: Endpoint identifier
+        
+    Returns:
+        HistorySingleResponse with latest snapshot
+        
+    Raises:
+        HTTPException: If no snapshots exist
+    """
+    snapshot = get_latest_snapshot(endpoint)
+    if snapshot is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No snapshots found for endpoint '{endpoint}'"
+        )
+    
+    return HistorySingleResponse(
+        endpoint=snapshot["endpoint"],
+        date=snapshot["date"],
+        timestamp=snapshot["timestamp"],
+        data=snapshot["data"]
+    )
+
+
+@router.post("/capture-history", response_model=CaptureHistoryResponse, tags=["history"])
+async def capture_history(
+    request_body: Optional[CaptureHistoryRequest] = None,
+    request: Request = None
+):
+    """
+    Manually trigger history capture for specified endpoints.
+    
+    This endpoint can be called by a scheduler (e.g., cron) to capture
+    current state of all endpoints or specific endpoints.
+    
+    Args:
+        request_body: Optional CaptureHistoryRequest with endpoints list and date
+        request: FastAPI Request object for getting base URL
+        
+    Returns:
+        CaptureHistoryResponse with capture results
+    """
+    import httpx
+    
+    if request_body is None:
+        request_body = CaptureHistoryRequest()
+    
+    # Determine date
+    capture_date = request_body.date
+    if capture_date is None:
+        capture_date = datetime.now().strftime("%Y-%m-%d")
+    else:
+        try:
+            datetime.strptime(capture_date, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid date format: {capture_date}. Expected YYYY-MM-DD")
+    
+    # List of endpoints to capture
+    # If not specified, we'll need to fetch from actual endpoints
+    # For now, we'll define a default list
+    endpoints_to_capture = request_body.endpoints or [
+        "strength_weakness_weekly",
+        "strength_weakness_monthly",
+        "pullback_weekly",
+        "pullback_monthly",
+        "analysis_1D",
+        "analysis_2D",
+        "analysis_3D",
+        "analysis_4D",
+    ]
+    
+    captured = []
+    errors = []
+    
+    # Map endpoint identifiers back to URLs
+    endpoint_url_map = {
+        "strength_weakness_weekly": "/api/v1/strength-weakness?period=weekly",
+        "strength_weakness_monthly": "/api/v1/strength-weakness?period=monthly",
+        "pullback_weekly": "/api/v1/pullback?period=weekly",
+        "pullback_monthly": "/api/v1/pullback?period=monthly",
+        "analysis_1D": "/api/v1/analysis/1D",
+        "analysis_2D": "/api/v1/analysis/2D",
+        "analysis_3D": "/api/v1/analysis/3D",
+        "analysis_4D": "/api/v1/analysis/4D",
+    }
+    
+    # For endpoints we can't map, skip them
+    for endpoint_id in endpoints_to_capture:
+        if endpoint_id not in endpoint_url_map:
+            errors.append(f"Unknown endpoint: {endpoint_id}")
+            continue
+        
+        url = endpoint_url_map[endpoint_id]
+        
+        try:
+            # Make internal request to the endpoint
+            # Note: This is a simplified approach. In production, you might want to
+            # call the handler functions directly instead of making HTTP requests
+            # Use request's base URL if available, otherwise default to localhost
+            if request:
+                base_url = str(request.base_url).rstrip("/")
+            else:
+                base_url = "http://localhost:8000"
+            
+            # Account for root_path if present
+            full_url = f"{base_url}{url}"
+            
+            async with httpx.AsyncClient() as client:
+                response = await client.get(full_url)
+                if response.status_code == 200:
+                    data = response.json()
+                    store_snapshot(endpoint_id, data, capture_date)
+                    captured.append(CaptureResult(
+                        endpoint=endpoint_id,
+                        date=capture_date,
+                        status="success"
+                    ))
+                else:
+                    error_msg = f"HTTP {response.status_code}: {response.text}"
+                    captured.append(CaptureResult(
+                        endpoint=endpoint_id,
+                        date=capture_date,
+                        status="error",
+                        error=error_msg
+                    ))
+                    errors.append(f"{endpoint_id}: {error_msg}")
+        except Exception as e:
+            error_msg = str(e)
+            captured.append(CaptureResult(
+                endpoint=endpoint_id,
+                date=capture_date,
+                status="error",
+                error=error_msg
+            ))
+            errors.append(f"{endpoint_id}: {error_msg}")
+    
+    return CaptureHistoryResponse(
+        success=len(errors) == 0,
+        captured=captured,
+        errors=errors
+    )

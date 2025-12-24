@@ -190,3 +190,54 @@ class StrengthWeaknessCategorizationResponse(BaseModel):
     period: str = Field(..., description="Aggregation period used: 'weekly' or 'monthly'")
     currencies: Dict[str, CurrencyCategorization] = Field(..., description="Categorized data for each currency")
     summary: StrengthWeaknessSummary = Field(..., description="Summary with currencies sorted by strength and weakness")
+
+
+class HistoricalSnapshot(BaseModel):
+    """Single historical snapshot."""
+    date: str = Field(..., description="Date in YYYY-MM-DD format")
+    timestamp: str = Field(..., description="ISO timestamp when snapshot was captured")
+    data: Dict = Field(..., description="Original response data")
+
+
+class HistoryRangeResponse(BaseModel):
+    """Response model for date range history endpoint."""
+    endpoint: str = Field(..., description="Endpoint identifier")
+    start_date: str = Field(..., description="Start date in YYYY-MM-DD format")
+    end_date: str = Field(..., description="End date in YYYY-MM-DD format")
+    snapshots: List[HistoricalSnapshot] = Field(..., description="List of snapshots within date range")
+
+
+class HistorySingleResponse(BaseModel):
+    """Response model for single date history endpoint."""
+    endpoint: str = Field(..., description="Endpoint identifier")
+    date: str = Field(..., description="Date in YYYY-MM-DD format")
+    timestamp: str = Field(..., description="ISO timestamp when snapshot was captured")
+    data: Dict = Field(..., description="Original response data")
+
+
+class HistoryDatesResponse(BaseModel):
+    """Response model for available dates endpoint."""
+    endpoint: str = Field(..., description="Endpoint identifier")
+    dates: List[str] = Field(..., description="List of available dates in YYYY-MM-DD format")
+    latest: Optional[str] = Field(None, description="Latest available date")
+
+
+class CaptureHistoryRequest(BaseModel):
+    """Request model for manual history capture."""
+    endpoints: Optional[List[str]] = Field(None, description="List of endpoint identifiers to capture. If empty, captures all.")
+    date: Optional[str] = Field(None, description="Date in YYYY-MM-DD format. If None, uses today.")
+
+
+class CaptureResult(BaseModel):
+    """Result of a single endpoint capture."""
+    endpoint: str = Field(..., description="Endpoint identifier")
+    date: str = Field(..., description="Date in YYYY-MM-DD format")
+    status: str = Field(..., description="Capture status: 'success' or 'error'")
+    error: Optional[str] = Field(None, description="Error message if status is 'error'")
+
+
+class CaptureHistoryResponse(BaseModel):
+    """Response model for capture history endpoint."""
+    success: bool = Field(..., description="Overall success status")
+    captured: List[CaptureResult] = Field(..., description="List of capture results")
+    errors: List[str] = Field(default_factory=list, description="List of error messages")

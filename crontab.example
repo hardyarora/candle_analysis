@@ -24,6 +24,14 @@
 15 0 * * * cd /root/candle_analysis && /usr/bin/python3 -m src.schedulers.run_timeframe --timeframe 4D >> /root/candle_analysis/data/logs/cron.log 2>&1
 
 # ============================================
+# History Capture Jobs
+# ============================================
+
+# Capture historical snapshots daily at 16:45 UTC (4:45 PM)
+# Adjust the base-url to match your API server URL
+45 16 * * * cd /root/candle_analysis && /usr/bin/python3 -m src.schedulers.capture_history --base-url http://45.33.12.68 >> /root/candle_analysis/data/logs/cron.log 2>&1
+
+# ============================================
 # Alternative: Run all timeframes at once
 # ============================================
 
@@ -35,7 +43,9 @@
 # ============================================
 # - Adjust the Python path (/usr/bin/python3) to match your system
 # - Adjust the project directory (/root/candle_analysis) to match your setup
+# - Adjust the base-url in the history capture job to match your API server
 # - The log file will capture all output from the cron jobs
 # - Each timeframe runs at a different time to avoid API rate limits
 # - UTC timezone is recommended for consistency
+# - History capture runs at 16:45 UTC (4:45 PM) - adjust time as needed
 
