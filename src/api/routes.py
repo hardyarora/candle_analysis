@@ -320,6 +320,7 @@ async def get_pullback_analysis(
         description="Aggregation period for pullback analysis: 'weekly' or 'monthly' (default: 'weekly')",
     ),
     force_oanda: bool = Query(default=False, description="Force loading from OANDA API instead of saved data"),
+    date: Optional[str] = Query(None, description="Load historical data for a specific date (YYYY-MM-DD format). If provided, returns historical snapshot instead of computing fresh data."),
 ):
     """
     Get pullback analysis for all currency pairs.
@@ -332,6 +333,10 @@ async def get_pullback_analysis(
     located at `/root/first_test_app/data/oanda_saved_data/`. To force loading fresh data
     from OANDA API, use the `force_oanda=true` query parameter.
     
+    If a `date` parameter is provided, the endpoint will load historical data from that date
+    instead of computing fresh analysis. Historical data must have been previously captured
+    by the history capture scheduler.
+    
     - 0% = at previous week's low
     - 100% = at previous week's high
     - < 0% = below previous week's low
@@ -342,6 +347,7 @@ async def get_pullback_analysis(
         ignore_candles: Number of candles to ignore at the end for the selected period (default: 0)
         period: Aggregation period for pullback analysis: "weekly" or "monthly"
         force_oanda: If True, force loading from OANDA API instead of saved data (default: False)
+        date: Optional date string in YYYY-MM-DD format to load historical data
         
     Returns:
         PullbackResponse with pullback analysis for each instrument
@@ -351,6 +357,7 @@ async def get_pullback_analysis(
         GET /api/v1/pullback?currency=JPY                       # Only JPY pairs (weekly, from cache)
         GET /api/v1/pullback?currency=USD&period=monthly        # Only USD pairs, monthly pullback (from cache)
         GET /api/v1/pullback?period=weekly&force_oanda=true     # Weekly pullback, force OANDA API
+        GET /api/v1/pullback?period=weekly&date=2024-01-15      # Load historical data from 2024-01-15
     """
     try:
         normalized_period = period.lower() if period else "weekly"
@@ -359,6 +366,42 @@ async def get_pullback_analysis(
                 status_code=400,
                 detail=f"Invalid period: {period}. Expected 'weekly' or 'monthly'.",
             )
+
+        # If date is provided, load from history
+        if date:
+            try:
+                datetime.strptime(date, "%Y-%m-%d")
+            except ValueError:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid date format: {date}. Expected YYYY-MM-DD format."
+                )
+            
+            endpoint_id = f"pullback_{normalized_period}"
+            snapshot = get_snapshot(endpoint_id, date)
+            
+            if snapshot is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"No historical data found for pullback analysis (period={normalized_period}) on date {date}."
+                )
+            
+            # Extract the data from snapshot
+            historical_data = snapshot.get("data", {})
+            
+            # Apply currency filter if provided
+            if currency:
+                currency_upper = currency.upper()
+                results = historical_data.get("results", [])
+                filtered_results = [
+                    r for r in results
+                    if currency_upper in r.get("instrument", "")
+                ]
+                historical_data = {**historical_data, "results": filtered_results}
+                historical_data["currency_filter"] = currency_upper
+            
+            logger.info(f"Loaded historical pullback analysis: date={date}, period={normalized_period}, currency={currency}")
+            return PullbackResponse(**historical_data)
 
         logger.info(f"Getting pullback analysis: currency={currency}, ignore_candles={ignore_candles}, period={normalized_period}, force_oanda={force_oanda}")
         analysis_data = analyze_all_pullbacks(
@@ -370,6 +413,8 @@ async def get_pullback_analysis(
         
         return PullbackResponse(**analysis_data)
         
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -442,6 +487,132 @@ async def run_pullback_analysis(
         raise HTTPException(
             status_code=500,
             detail=f"Pullback analysis failed: {str(e)}"
+        )
+
+
+@router.get("/pullback/history", response_model=HistoryDatesResponse, tags=["pullback"])
+async def get_pullback_history(
+    period: str = Query(
+        default="weekly",
+        description="Aggregation period for pullback analysis: 'weekly' or 'monthly' (default: 'weekly')",
+    ),
+):
+    """
+    Get list of available dates for historical pullback analysis.
+    
+    Args:
+        period: Aggregation period for pullback analysis: "weekly" or "monthly"
+        
+    Returns:
+        HistoryDatesResponse with list of available dates and latest date
+        
+    Example:
+        GET /api/v1/pullback/history?period=weekly
+        GET /api/v1/pullback/history?period=monthly
+    """
+    try:
+        normalized_period = period.lower() if period else "weekly"
+        if normalized_period not in {"weekly", "monthly"}:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid period: {period}. Expected 'weekly' or 'monthly'.",
+            )
+        
+        endpoint_id = f"pullback_{normalized_period}"
+        dates = list_dates(endpoint_id)
+        
+        latest_date = dates[-1] if dates else None
+        
+        return HistoryDatesResponse(
+            endpoint=endpoint_id,
+            dates=dates,
+            latest=latest_date
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get pullback history dates: {str(e)}"
+        )
+
+
+@router.get("/pullback/{date}", response_model=PullbackResponse, tags=["pullback"])
+async def get_historical_pullback(
+    date: str = PathParam(..., description="Date in YYYY-MM-DD format"),
+    currency: Optional[str] = Query(None, description="Filter by currency code (e.g., JPY, USD, EUR)"),
+    period: str = Query(
+        default="weekly",
+        description="Aggregation period for pullback analysis: 'weekly' or 'monthly' (default: 'weekly')",
+    ),
+):
+    """
+    Get historical pullback analysis for a specific date.
+    
+    Args:
+        date: Date string in YYYY-MM-DD format
+        currency: Optional currency code to filter by (e.g., "JPY" to show all JPY pairs)
+        period: Aggregation period for pullback analysis: "weekly" or "monthly"
+        
+    Returns:
+        PullbackResponse with historical pullback analysis data
+        
+    Raises:
+        HTTPException: If date format is invalid, period is invalid, or historical data not found
+        
+    Example:
+        GET /api/v1/pullback/2024-01-15?period=weekly
+        GET /api/v1/pullback/2024-01-15?period=monthly&currency=JPY
+    """
+    try:
+        normalized_period = period.lower() if period else "weekly"
+        if normalized_period not in {"weekly", "monthly"}:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid period: {period}. Expected 'weekly' or 'monthly'.",
+            )
+        
+        # Validate date format
+        try:
+            datetime.strptime(date, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid date format: {date}. Expected YYYY-MM-DD format."
+            )
+        
+        endpoint_id = f"pullback_{normalized_period}"
+        snapshot = get_snapshot(endpoint_id, date)
+        
+        if snapshot is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No historical data found for pullback analysis (period={normalized_period}) on date {date}."
+            )
+        
+        # Extract the data from snapshot
+        historical_data = snapshot.get("data", {})
+        
+        # Apply currency filter if provided
+        if currency:
+            currency_upper = currency.upper()
+            results = historical_data.get("results", [])
+            filtered_results = [
+                r for r in results
+                if currency_upper in r.get("instrument", "")
+            ]
+            historical_data = {**historical_data, "results": filtered_results}
+            historical_data["currency_filter"] = currency_upper
+        
+        logger.info(f"Loaded historical pullback analysis: date={date}, period={normalized_period}, currency={currency}")
+        return PullbackResponse(**historical_data)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get historical pullback analysis: {str(e)}"
         )
 
 
