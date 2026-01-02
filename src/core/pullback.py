@@ -128,7 +128,9 @@ def calculate_currency_strength_weakness(
             strength_tested_high_instruments.append(instrument)
         if target_currency == quote_currency and tested_low:
             strength_count += 1
-            strength_tested_low_instruments.append(instrument)
+            # Reverse the instrument name when quote currency to show currency's perspective
+            reversed_instrument = f"{quote_currency}_{base_currency}"
+            strength_tested_high_instruments.append(reversed_instrument)
 
         # Weakness conditions
         if target_currency == base_currency and tested_low:
@@ -136,7 +138,9 @@ def calculate_currency_strength_weakness(
             weakness_tested_low_instruments.append(instrument)
         if target_currency == quote_currency and tested_high:
             weakness_count += 1
-            weakness_tested_high_instruments.append(instrument)
+            # Reverse the instrument name when quote currency to show currency's perspective
+            reversed_instrument = f"{quote_currency}_{base_currency}"
+            weakness_tested_low_instruments.append(reversed_instrument)
 
     if total_pairs == 0:
         return None

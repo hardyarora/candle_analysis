@@ -1,0 +1,36 @@
+I have historical currency strength/weakness data that needs to be processed and added to the historical storage system.
+
+Here's my data:
+
+[PASTE YOUR DATA HERE - Format: YYYY-MM-DD  INSTRUMENT (STATUS) (TEST_TYPE)]
+
+Please:
+1. Process this data using the same logic as categorize_currencies.py
+2. **IMPORTANT: Make data cumulative** - each date should include all pairs from previous dates in the week
+   - Example: If USD has 3 tested_low pairs on day 15, and 1 new pair on day 16, day 16 should show 4 total (3 from previous + 1 new)
+   - This reflects the cumulative state of the week up to that date
+3. Calculate strength/weakness for each currency per date (based on cumulative counts)
+4. Show me the results with:
+   - Total count per currency (cumulative)
+   - Tested high count and list (cumulative)
+   - Tested low count and list (cumulative)
+   - Strength and weakness percentages
+5. Generate currency_by_date.json with the processed data
+6. Add the data to historical storage for the strength_weakness_weekly endpoint
+
+The data format is:
+- Date: YYYY-MM-DD
+- Instrument: Currency pair like USD_CAD, EUR_GBP
+- Status: HIGH_BROKEN or LOW_BROKEN
+  - HIGH_BROKEN: Base currency tested high, quote currency tested low
+  - LOW_BROKEN: Base currency tested low, quote currency tested high
+- TEST_TYPE: Usually (FIRST TEST) - can be ignored
+
+Expected output format should match the API response:
+- timestamp
+- currency_filter: null
+- ignore_candles: 0
+- period: "weekly"
+- currencies: {currency_code: {tested_high, tested_high_count, tested_low, tested_low_count, strength, weakness}}
+- summary: {by_strength: [{currency, value}], by_weakness: [{currency, value}]}
+

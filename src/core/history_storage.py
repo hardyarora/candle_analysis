@@ -229,3 +229,5 @@ def get_latest_snapshot(endpoint: str) -> Optional[Dict]:
     latest_date = dates[-1]
     return get_snapshot(endpoint, latest_date)
 
+
+
