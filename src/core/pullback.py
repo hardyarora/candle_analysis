@@ -35,10 +35,10 @@ def _should_exclude_from_currency_calculation(instrument: str, currency: str) ->
     for a given currency.
 
     Currently, for USD calculations we exclude metals pairs (XAU_USD, XAG_USD)
-    as per business rules.
+    as per business rules. Also handles reversed instrument names (USD_XAU, USD_XAG).
 
     Args:
-        instrument: Instrument name (e.g., "GBP_USD")
+        instrument: Instrument name (e.g., "GBP_USD" or "USD_XAU")
         currency: Currency code (e.g., "USD")
 
     Returns:
@@ -47,8 +47,10 @@ def _should_exclude_from_currency_calculation(instrument: str, currency: str) ->
     normalized_currency = currency.upper()
     normalized_instrument = instrument.upper()
 
-    if normalized_currency == "USD" and normalized_instrument in {"XAU_USD", "XAG_USD"}:
-        return True
+    if normalized_currency == "USD":
+        # Check both original and reversed forms
+        if normalized_instrument in {"XAU_USD", "XAG_USD", "USD_XAU", "USD_XAG"}:
+            return True
 
     return False
 
@@ -128,9 +130,7 @@ def calculate_currency_strength_weakness(
             strength_tested_high_instruments.append(instrument)
         if target_currency == quote_currency and tested_low:
             strength_count += 1
-            # Reverse the instrument name when quote currency to show currency's perspective
-            reversed_instrument = f"{quote_currency}_{base_currency}"
-            strength_tested_high_instruments.append(reversed_instrument)
+            strength_tested_low_instruments.append(instrument)
 
         # Weakness conditions
         if target_currency == base_currency and tested_low:
@@ -138,9 +138,7 @@ def calculate_currency_strength_weakness(
             weakness_tested_low_instruments.append(instrument)
         if target_currency == quote_currency and tested_high:
             weakness_count += 1
-            # Reverse the instrument name when quote currency to show currency's perspective
-            reversed_instrument = f"{quote_currency}_{base_currency}"
-            weakness_tested_low_instruments.append(reversed_instrument)
+            weakness_tested_high_instruments.append(instrument)
 
     if total_pairs == 0:
         return None
@@ -286,6 +284,131 @@ def categorize_currencies_strength_weakness(
         }
     
     return result
+
+
+def reverse_pullback_result(result: Dict, target_currency: str) -> Dict:
+    """
+    Reverse a pullback result when the target currency is in the quote position.
+    
+    When reversing a currency pair (e.g., EUR_USD -> USD_EUR), we need to:
+    1. Reverse the instrument name
+    2. Invert all prices (high becomes low, low becomes high, etc.)
+    3. Recalculate pullback percentage with inverted prices
+    4. Swap tested_high and tested_low
+    
+    Args:
+        result: Pullback result dictionary from analyze_pullback_for_instrument
+        target_currency: Currency code that should be in base position after reversal
+        
+    Returns:
+        Reversed pullback result dictionary
+    """
+    instrument = result.get("instrument", "")
+    try:
+        base, quote = instrument.split("_")
+    except ValueError:
+        # Can't reverse if instrument name is malformed
+        return result
+    
+    # Only reverse if target_currency is in quote position
+    if quote.upper() != target_currency.upper():
+        return result
+    
+    # Reverse instrument name
+    reversed_instrument = f"{quote}_{base}"
+    
+    # Invert all prices (when reversing pair, prices are inverted)
+    def invert_price(price: float) -> float:
+        """Invert a price: 1/price"""
+        if price == 0:
+            return 0.0
+        return 1.0 / price
+    
+    # Invert previous week candle data
+    prev_week = result.get("prev_week", {})
+    prev_week_high_orig = prev_week.get("high", 0)
+    prev_week_low_orig = prev_week.get("low", 0)
+    prev_week_open_orig = prev_week.get("open", 0)
+    prev_week_close_orig = prev_week.get("close", 0)
+    
+    # When reversing: new_high = 1/old_low, new_low = 1/old_high
+    prev_week_high_new = invert_price(prev_week_low_orig)
+    prev_week_low_new = invert_price(prev_week_high_orig)
+    prev_week_open_new = invert_price(prev_week_open_orig)
+    prev_week_close_new = invert_price(prev_week_close_orig)
+    
+    # Invert current price
+    current_price_orig = result.get("current_price", 0)
+    current_price_new = invert_price(current_price_orig)
+    
+    # Recalculate pullback percentage with inverted prices
+    pullback_pct_new = calculate_pullback_percentage(
+        current_price_new, 
+        prev_week_high_new, 
+        prev_week_low_new
+    )
+    
+    # Swap tested_high and tested_low (perspective is reversed)
+    tested_high_orig = result.get("tested_high", False)
+    tested_low_orig = result.get("tested_low", False)
+    tested_high_new = tested_low_orig
+    tested_low_new = tested_high_orig
+    
+    # Build reversed result
+    reversed_result = {
+        "instrument": reversed_instrument,
+        "current_price": round(current_price_new, 6),
+        "prev_week": {
+            "time": prev_week.get("time"),
+            "open": round(prev_week_open_new, 6),
+            "high": round(prev_week_high_new, 6),
+            "low": round(prev_week_low_new, 6),
+            "close": round(prev_week_close_new, 6),
+        },
+        "pullback_percentage": pullback_pct_new,
+        "tested_high": tested_high_new,
+        "tested_low": tested_low_new,
+    }
+    
+    # Handle current week data if available
+    current_week = result.get("current_week")
+    if current_week:
+        current_week_high_orig = current_week.get("high")
+        current_week_low_orig = current_week.get("low")
+        
+        if current_week_high_orig is not None and current_week_low_orig is not None:
+            # Invert: new_high = 1/old_low, new_low = 1/old_high
+            current_week_high_new = invert_price(current_week_low_orig)
+            current_week_low_new = invert_price(current_week_high_orig)
+            
+            reversed_result["current_week"] = {
+                "time": current_week.get("time"),
+                "high": round(current_week_high_new, 6),
+                "low": round(current_week_low_new, 6),
+            }
+            
+            # Recalculate max pullback and max extension with inverted prices
+            # max_pullback_percentage: lowest point in current week relative to previous week range
+            # (using current_week_low_new which is 1/original_current_week_high)
+            max_pullback_pct_new = calculate_pullback_percentage(
+                current_week_low_new, 
+                prev_week_high_new, 
+                prev_week_low_new
+            )
+            # max_extension_percentage: highest point in current week relative to previous week range
+            # (using current_week_high_new which is 1/original_current_week_low)
+            max_extension_pct_new = calculate_pullback_percentage(
+                current_week_high_new, 
+                prev_week_high_new, 
+                prev_week_low_new
+            )
+            
+            if max_pullback_pct_new is not None:
+                reversed_result["max_pullback_percentage"] = max_pullback_pct_new
+            if max_extension_pct_new is not None:
+                reversed_result["max_extension_percentage"] = max_extension_pct_new
+    
+    return reversed_result
 
 
 def get_current_price(instrument: str, force_oanda: bool = False) -> Optional[float]:
@@ -601,6 +724,8 @@ def analyze_all_pullbacks(
         filtered_instruments = INSTRUMENTS
     
     results = []
+    # Track which instruments we've already added (to avoid duplicates)
+    added_instruments = set()
     
     for instrument in filtered_instruments:
         analysis = analyze_pullback_for_instrument(
@@ -610,7 +735,48 @@ def analyze_all_pullbacks(
             force_oanda=force_oanda,
         )
         if analysis:
-            results.append(analysis)
+            try:
+                base, quote = instrument.split("_")
+                
+                # If currency filter is provided, reverse results where currency is in quote position
+                if cache_currency_filter:
+                    # If target currency is in quote position, reverse the result
+                    if quote.upper() == cache_currency_filter.upper():
+                        reversed_analysis = reverse_pullback_result(analysis, cache_currency_filter)
+                        # Only use reversed result if pullback_percentage is valid
+                        if reversed_analysis.get("pullback_percentage") is not None:
+                            analysis = reversed_analysis
+                            instrument = reversed_analysis.get("instrument", instrument)
+                else:
+                    # No currency filter: add both original and reversed versions
+                    # Add original result
+                    if instrument not in added_instruments:
+                        if analysis.get("pullback_percentage") is not None:
+                            results.append(analysis)
+                            added_instruments.add(instrument)
+                    
+                    # Add reversed version if quote currency is in our currency list
+                    # and the reversed pair doesn't already exist in the original instruments list
+                    if quote.upper() in CURRENCY_FULL_NAMES:
+                        reversed_instrument = f"{quote}_{base}"
+                        # Only add reversed if it's not in the original instruments list
+                        if reversed_instrument not in INSTRUMENTS:
+                            reversed_analysis = reverse_pullback_result(analysis, quote)
+                            # Only add reversed if it doesn't already exist and pullback is valid
+                            if (reversed_instrument not in added_instruments and 
+                                reversed_analysis.get("pullback_percentage") is not None):
+                                results.append(reversed_analysis)
+                                added_instruments.add(reversed_instrument)
+                    continue  # Skip the normal append below since we handled it
+                    
+            except ValueError:
+                # Skip reversal if instrument name is malformed
+                pass
+            
+            # Only add if pullback_percentage is valid (should always be true, but safety check)
+            if analysis.get("pullback_percentage") is not None and instrument not in added_instruments:
+                results.append(analysis)
+                added_instruments.add(instrument)
     
     # Sort by pullback percentage (descending)
     results.sort(key=lambda x: x["pullback_percentage"], reverse=True)
