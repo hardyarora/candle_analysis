@@ -23,6 +23,15 @@ from .config import (
 )
 from ..utils.timeframe import parse_timeframe
 
+# Optional imports for feedback integration
+try:
+    from .engulfing_feedback import get_merged_feedback
+    from .engulfing_metrics import calculate_engulfing_metrics
+    from .adaptive_learning import calculate_adaptive_similarity, learn_from_feedback
+    FEEDBACK_AVAILABLE = True
+except ImportError:
+    FEEDBACK_AVAILABLE = False
+
 logger = logging.getLogger("candle_analysis_api")
 
 
@@ -223,9 +232,11 @@ def analyze_candle_relation(mc1: Dict, mc2: Dict, engulfing_threshold_percent: f
     top_engulfs = mc2_body_top >= (mc1_body_top - threshold_absolute)
     
     if bottom_engulfs and top_engulfs:
-        if mc2_close > mc2_open:  # mc2 is bullish
+        # Bullish engulfing: mc2 is bullish (green) AND mc1 is bearish (red)
+        if mc2_close > mc2_open and mc1_close < mc1_open:
             patterns.append("bullish engulfing")
-        elif mc2_close < mc2_open:  # mc2 is bearish
+        # Bearish engulfing: mc2 is bearish (red) AND mc1 is bullish (green)
+        elif mc2_close < mc2_open and mc1_close > mc1_open:
             patterns.append("bearish engulfing")
     
     if not patterns:
@@ -398,3 +409,134 @@ def analyze_all_currencies(timeframe: str, ignore_candles: int = DEFAULT_IGNORE_
         "patterns": patterns,
         "instruments": instrument_results,
     }
+
+
+def enhance_analysis_with_feedback(
+    analysis_data: Dict,
+    timeframe: str,
+    use_merged: bool = True,
+    use_adaptive: bool = True
+) -> Dict:
+    """
+    Enhance analysis results with feedback-based scoring and statistics.
+    
+    Args:
+        analysis_data: Analysis data dictionary from analyze_all_currencies()
+        timeframe: Timeframe string (e.g., "1D", "2D")
+        use_merged: If True, use merged feedback (default: True)
+        use_adaptive: If True, use adaptive learning (default: True)
+        
+    Returns:
+        Enhanced analysis dictionary with feedback scores and statistics
+    """
+    if not FEEDBACK_AVAILABLE:
+        logger.warning("Feedback modules not available, returning original analysis")
+        return analysis_data
+    
+    enhanced = analysis_data.copy()
+    enhanced["feedback_enhanced"] = True
+    enhanced["feedback_statistics"] = {}
+    
+    # Get learned patterns
+    learned_patterns = None
+    if use_adaptive:
+        try:
+            learned_patterns = learn_from_feedback(use_merged=use_merged)
+        except Exception as e:
+            logger.warning(f"Failed to learn patterns: {e}")
+    
+    # Enhance each instrument result
+    enhanced_instruments = []
+    for instrument_result in analysis_data.get("instruments", []):
+        enhanced_instr = instrument_result.copy()
+        
+        relation = instrument_result.get("relation", "")
+        has_bullish_engulfing = "bullish engulfing" in relation
+        has_bearish_engulfing = "bearish engulfing" in relation
+        
+        if has_bullish_engulfing or has_bearish_engulfing:
+            pattern_type = "bullish" if has_bullish_engulfing else "bearish"
+            instrument = instrument_result.get("instrument", "")
+            mc1 = instrument_result.get("mc1", {})
+            mc2 = instrument_result.get("mc2", {})
+            
+            if mc1 and mc2:
+                try:
+                    # Calculate metrics for current pattern
+                    current_metrics = calculate_engulfing_metrics(mc1, mc2, pattern_type)
+                    
+                    # Get historical feedback
+                    feedback_list = get_merged_feedback(
+                        instrument=instrument,
+                        pattern_type=pattern_type
+                    ) if use_merged else []
+                    
+                    # Calculate similarity score
+                    similarity_score = 0.0
+                    if feedback_list:
+                        similarity_score = calculate_adaptive_similarity(
+                            current_metrics=current_metrics,
+                            historical_feedback=feedback_list,
+                            learned_patterns=learned_patterns
+                        )
+                    
+                    # Add feedback information
+                    enhanced_instr["feedback"] = {
+                        "similarity_score": round(similarity_score, 3),
+                        "metrics": current_metrics,
+                        "pattern_type": pattern_type,
+                        "has_feedback_data": len(feedback_list) > 0
+                    }
+                    
+                    # Add confidence indicator
+                    if similarity_score > 0.7:
+                        enhanced_instr["feedback"]["confidence"] = "high"
+                    elif similarity_score > 0.4:
+                        enhanced_instr["feedback"]["confidence"] = "medium"
+                    else:
+                        enhanced_instr["feedback"]["confidence"] = "low"
+                    
+                except Exception as e:
+                    logger.warning(f"Failed to enhance instrument {instrument} with feedback: {e}")
+                    enhanced_instr["feedback"] = {"error": str(e)}
+        
+        enhanced_instruments.append(enhanced_instr)
+    
+    enhanced["instruments"] = enhanced_instruments
+    
+    # Add overall statistics
+    try:
+        from .engulfing_feedback import get_merged_feedback
+        
+        # Count engulfing patterns
+        bullish_count = sum(1 for instr in enhanced_instruments if "bullish engulfing" in instr.get("relation", ""))
+        bearish_count = sum(1 for instr in enhanced_instruments if "bearish engulfing" in instr.get("relation", ""))
+        
+        if bullish_count > 0 or bearish_count > 0:
+            # Get feedback for both pattern types
+            bullish_feedback = get_merged_feedback(pattern_type="bullish") if use_merged else []
+            bearish_feedback = get_merged_feedback(pattern_type="bearish") if use_merged else []
+            
+            total_feedback = len(bullish_feedback) + len(bearish_feedback)
+            
+            if total_feedback > 0:
+                avg_rating = (
+                    sum(f.get("rating", 0) for f in bullish_feedback) +
+                    sum(f.get("rating", 0) for f in bearish_feedback)
+                ) / total_feedback
+                
+                enhanced["feedback_statistics"] = {
+                    "total_feedback_entries": total_feedback,
+                    "bullish_feedback_entries": len(bullish_feedback),
+                    "bearish_feedback_entries": len(bearish_feedback),
+                    "average_rating": round(avg_rating, 2),
+                    "learned_patterns_available": learned_patterns is not None,
+                    "engulfing_patterns_found": {
+                        "bullish": bullish_count,
+                        "bearish": bearish_count
+                    }
+                }
+    except Exception as e:
+        logger.warning(f"Failed to add feedback statistics: {e}")
+    
+    return enhanced

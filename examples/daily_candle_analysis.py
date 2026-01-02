@@ -202,9 +202,11 @@ def analyze_candle_relation(mc1: Dict, mc2: Dict, engulfing_threshold_percent: f
     top_engulfs = mc2_body_top >= (mc1_body_top - threshold_absolute)
     
     if bottom_engulfs and top_engulfs:
-        if mc2_close > mc2_open:  # mc2 is bullish
+        # Bullish engulfing: mc2 is bullish (green) AND mc1 is bearish (red)
+        if mc2_close > mc2_open and mc1_close < mc1_open:
             patterns.append("bullish engulfing")
-        elif mc2_close < mc2_open:  # mc2 is bearish
+        # Bearish engulfing: mc2 is bearish (red) AND mc1 is bullish (green)
+        elif mc2_close < mc2_open and mc1_close > mc1_open:
             patterns.append("bearish engulfing")
     
     # # Check if mc2 is bullish (close > open)

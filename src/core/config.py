@@ -83,3 +83,7 @@ DEFAULT_CANDLE_COUNT_MONTHLY = 240
 # Percentage threshold for body engulfing detection (0.05 = 0.05%)
 # Allows slight tolerance when mc2's body is very close to engulfing mc1's body
 DEFAULT_ENGULFING_THRESHOLD_PERCENT = 0.10  # 0.05% threshold
+
+# Engulfing feedback storage directories
+ENGULFING_FEEDBACK_DIR = DATA_DIR / "engulfing_feedback"
+ENGULFING_FEEDBACK_MERGED_DIR = ENGULFING_FEEDBACK_DIR / "merged"

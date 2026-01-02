@@ -2,7 +2,7 @@
 Pydantic models for API request/response schemas.
 """
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Literal
 from pydantic import BaseModel, Field
 
 
@@ -73,8 +73,8 @@ class PullbackResult(BaseModel):
     tested_high: bool = Field(..., description="Whether price has tested previous week high")
     tested_low: bool = Field(..., description="Whether price has tested previous week low")
     current_week: Optional[CurrentWeekCandle] = Field(None, description="Current week candle data (if available)")
-    max_pullback_percentage: Optional[float] = Field(None, description="Maximum pullback percentage reached this week (using current week low)")
-    max_extension_percentage: Optional[float] = Field(None, description="Maximum extension percentage reached this week (using current week high)")
+    max_pullback_percentage: Optional[float] = Field(None, description="Maximum pullback percentage reached this week (using current week low, relative to previous week range)")
+    max_extension_percentage: Optional[float] = Field(None, description="Maximum extension percentage beyond previous week's high (using current week high, 0% = at prev high, >0% = extended beyond)")
 
 
 class StrengthWeaknessDetails(BaseModel):
@@ -241,3 +241,78 @@ class CaptureHistoryResponse(BaseModel):
     success: bool = Field(..., description="Overall success status")
     captured: List[CaptureResult] = Field(..., description="List of capture results")
     errors: List[str] = Field(default_factory=list, description="List of error messages")
+
+
+# Engulfing Feedback Models
+
+class FeedbackRequest(BaseModel):
+    """Request model for submitting timeframe-specific feedback."""
+    instrument: str = Field(..., description="Currency pair (e.g., GBP_USD)")
+    timeframe: str = Field(..., description="Timeframe: 1D, 2D, 3D, or 4D (case insensitive)")
+    date: str = Field(..., description="Date in YYYY-MM-DD format")
+    pattern_type: Literal["bullish", "bearish"] = Field(..., description="Pattern type: bullish or bearish")
+    rating: int = Field(..., ge=1, le=10, description="Rating from 1-10")
+    notes: Optional[str] = Field(None, description="Optional notes")
+
+
+class GeneralFeedbackRequest(BaseModel):
+    """Request model for submitting general/merged feedback."""
+    instrument: str = Field(..., description="Currency pair (e.g., GBP_USD)")
+    date: str = Field(..., description="Date in YYYY-MM-DD format")
+    pattern_type: Literal["bullish", "bearish"] = Field(..., description="Pattern type: bullish or bearish")
+    rating: int = Field(..., ge=1, le=10, description="Rating from 1-10")
+    notes: Optional[str] = Field(None, description="Optional notes")
+
+
+class FeedbackResponse(BaseModel):
+    """Response model for feedback submission."""
+    id: str = Field(..., description="Feedback ID")
+    instrument: str = Field(..., description="Currency pair")
+    timeframe: Optional[str] = Field(None, description="Timeframe (None for merged feedback)")
+    date: str = Field(..., description="Date in YYYY-MM-DD format")
+    pattern_type: str = Field(..., description="Pattern type: bullish or bearish")
+    rating: int = Field(..., description="Rating from 1-10")
+    metrics: Dict = Field(..., description="Calculated metrics")
+    candles: Dict = Field(..., description="Candle data (mc1, mc2)")
+    context: Optional[Dict] = Field(None, description="Context information")
+    notes: Optional[str] = Field(None, description="Optional notes")
+    timestamp: str = Field(..., description="ISO timestamp")
+    is_merged: bool = Field(..., description="Whether this is merged feedback")
+    source_timeframes: Optional[List[str]] = Field(None, description="Source timeframes for merged feedback")
+    confidence_score: Optional[float] = Field(None, description="Confidence score (for merged feedback)")
+
+
+class StatisticsResponse(BaseModel):
+    """Response model for feedback statistics."""
+    pattern_type: str = Field(..., description="Pattern type")
+    use_merged: bool = Field(..., description="Whether merged feedback was used")
+    total_feedback_count: int = Field(..., description="Total number of feedback entries")
+    average_rating: float = Field(..., description="Average rating")
+    position_distribution: Dict = Field(..., description="Distribution of body positions")
+    metric_statistics: Dict = Field(..., description="Statistics for numeric metrics")
+    top_characteristics: List[Dict] = Field(..., description="Top characteristics of high-rated patterns")
+    learned_patterns: Optional[Dict] = Field(None, description="Learned patterns from adaptive learning")
+    confidence_scores: Optional[Dict] = Field(None, description="Confidence scores")
+
+
+class BacktestRequest(BaseModel):
+    """Request model for backtesting."""
+    instrument: str = Field(..., description="Currency pair (e.g., GBP_USD)")
+    pattern_type: Literal["bullish", "bearish"] = Field(..., description="Pattern type: bullish or bearish")
+    start_date: str = Field(..., description="Start date in YYYY-MM-DD format")
+    end_date: str = Field(..., description="End date in YYYY-MM-DD format")
+    timeframe: str = Field(..., description="Timeframe: 1D, 2D, 3D, or 4D (case insensitive)")
+
+
+class BacktestResponse(BaseModel):
+    """Response model for backtesting results."""
+    instrument: str = Field(..., description="Currency pair")
+    pattern_type: str = Field(..., description="Pattern type")
+    timeframe: str = Field(..., description="Timeframe")
+    start_date: str = Field(..., description="Start date")
+    end_date: str = Field(..., description="End date")
+    total_patterns_found: int = Field(..., description="Total number of patterns found")
+    patterns_matching_feedback: int = Field(..., description="Number of patterns matching feedback")
+    success_rate: float = Field(..., description="Success rate percentage")
+    average_price_movement: float = Field(..., description="Average price movement percentage")
+    detailed_results: List[Dict] = Field(..., description="Detailed results for each pattern")

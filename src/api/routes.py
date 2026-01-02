@@ -1,9 +1,10 @@
 """
 FastAPI routes for candle analysis API.
 """
+import json
 import logging
 from fastapi import APIRouter, HTTPException, Path as PathParam, Query, Request
-from typing import Optional
+from typing import Optional, List, Literal
 
 from .models import (
     AnalysisResponse,
@@ -23,10 +24,26 @@ from .models import (
     CaptureHistoryRequest,
     CaptureHistoryResponse,
     CaptureResult,
+    FeedbackRequest,
+    GeneralFeedbackRequest,
+    FeedbackResponse,
+    StatisticsResponse,
+    BacktestRequest,
+    BacktestResponse,
 )
 from ..core.file_manager import load_analysis, list_available_dates, save_analysis, backup_current_analysis
-from ..core.candle_analyzer import analyze_all_currencies
+from ..core.candle_analyzer import analyze_all_currencies, enhance_analysis_with_feedback, fetch_candles_raw, merge_candles, analyze_candle_relation
 from ..core.pullback import analyze_all_pullbacks, categorize_currencies_strength_weakness
+from ..core.engulfing_feedback import (
+    store_feedback,
+    store_general_feedback,
+    aggregate_feedback_across_timeframes,
+    get_feedback,
+    get_merged_feedback,
+)
+from ..core.engulfing_metrics import calculate_engulfing_metrics
+from ..core.adaptive_learning import learn_from_feedback, calculate_adaptive_similarity
+from ..core.engulfing_backtest import backtest_pattern
 from ..core.history_storage import (
     store_snapshot,
     get_snapshot,
@@ -237,6 +254,59 @@ async def run_analysis(
             status_code=500,
             detail=f"Analysis failed: {str(e)}"
         )
+
+
+@router.get("/analysis/{timeframe}/enhanced", response_model=AnalysisResponse, tags=["analysis"])
+async def get_enhanced_analysis(
+    timeframe: str = PathParam(..., description="Timeframe: 1D, 2D, 3D, or 4D (case insensitive)"),
+    use_merged: bool = Query(default=True, description="Use merged feedback (default: True)"),
+    use_adaptive: bool = Query(default=True, description="Use adaptive learning (default: True)")
+):
+    """
+    Get enhanced analysis with feedback-based scoring and statistics.
+    
+    This endpoint returns the current analysis enhanced with:
+    - Similarity scores for engulfing patterns (compared to historical feedback)
+    - Adaptive scoring using learned patterns
+    - Confidence indicators
+    
+    Args:
+        timeframe: Timeframe string (e.g., "1D", "2D", "3D", "4D")
+        use_merged: Use merged feedback across timeframes (default: True)
+        use_adaptive: Use adaptive learning for scoring (default: True)
+        
+    Returns:
+        Enhanced AnalysisResponse with feedback information
+        
+    Raises:
+        HTTPException: If timeframe is invalid or analysis not found
+    """
+    try:
+        normalized_tf = normalize_timeframe(timeframe)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    
+    # Load current analysis
+    analysis_data = load_analysis(normalized_tf)
+    if not analysis_data:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No analysis found for timeframe {normalized_tf}. Run analysis first."
+        )
+    
+    # Enhance with feedback
+    try:
+        enhanced_data = enhance_analysis_with_feedback(
+            analysis_data=analysis_data,
+            timeframe=normalized_tf,
+            use_merged=use_merged,
+            use_adaptive=use_adaptive
+        )
+    except Exception as e:
+        logger.warning(f"Failed to enhance analysis with feedback: {e}")
+        enhanced_data = analysis_data
+    
+    return AnalysisResponse(**enhanced_data)
 
 
 @router.post("/analysis/{timeframe}/run", response_model=AnalysisResponse, tags=["analysis"])
@@ -1121,3 +1191,365 @@ async def capture_history(
         captured=captured,
         errors=errors
     )
+
+
+# Engulfing Feedback Endpoints
+
+@router.post("/engulfing/feedback", response_model=FeedbackResponse, tags=["engulfing"])
+async def submit_feedback(request: FeedbackRequest):
+    """
+    Submit timeframe-specific feedback for an engulfing pattern.
+    
+    This endpoint calculates metrics from the current analysis data and stores
+    the feedback. Optionally triggers aggregation to merged feedback.
+    
+    Args:
+        request: FeedbackRequest with instrument, timeframe, date, pattern_type, rating, notes
+        
+    Returns:
+        FeedbackResponse with stored feedback and calculated metrics
+        
+    Raises:
+        HTTPException: If timeframe is invalid or analysis data not found
+    """
+    try:
+        normalized_tf = normalize_timeframe(request.timeframe)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    
+    # Validate date format
+    try:
+        datetime.strptime(request.date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format. Expected YYYY-MM-DD")
+    
+    # Load analysis data for the timeframe and date
+    analysis_data = load_analysis(normalized_tf)
+    if not analysis_data:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No analysis data found for timeframe {normalized_tf}. Run analysis first."
+        )
+    
+    # Find the instrument in the analysis
+    instrument_data = None
+    for instr in analysis_data.get("instruments", []):
+        if instr.get("instrument") == request.instrument:
+            instrument_data = instr
+            break
+    
+    if not instrument_data:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Instrument {request.instrument} not found in analysis data"
+        )
+    
+    # Get candle data
+    mc1 = instrument_data.get("mc1", {})
+    mc2 = instrument_data.get("mc2", {})
+    
+    if not mc1 or not mc2:
+        raise HTTPException(
+            status_code=400,
+            detail="Candle data not available for this instrument"
+        )
+    
+    # Calculate metrics
+    metrics = calculate_engulfing_metrics(mc1, mc2, request.pattern_type)
+    
+    # Store feedback
+    filepath = store_feedback(
+        instrument=request.instrument,
+        timeframe=normalized_tf,
+        date=request.date,
+        pattern_type=request.pattern_type,
+        rating=request.rating,
+        metrics=metrics,
+        candles={"mc1": mc1, "mc2": mc2},
+        notes=request.notes
+    )
+    
+    # Optionally aggregate to merged feedback
+    try:
+        aggregate_feedback_across_timeframes(
+            instrument=request.instrument,
+            pattern_type=request.pattern_type,
+            date=request.date,
+            weight_by_rating=True
+        )
+    except Exception as e:
+        logger.warning(f"Failed to aggregate feedback: {e}")
+    
+    # Load the stored feedback to return
+    with open(filepath, 'r', encoding='utf-8') as f:
+        feedback_data = json.load(f)
+    
+    return FeedbackResponse(**feedback_data)
+
+
+@router.post("/engulfing/feedback/general", response_model=FeedbackResponse, tags=["engulfing"])
+async def submit_general_feedback(request: GeneralFeedbackRequest):
+    """
+    Submit general/merged feedback for an engulfing pattern.
+    
+    This stores feedback that applies across all timeframes (not timeframe-specific).
+    
+    Args:
+        request: GeneralFeedbackRequest with instrument, date, pattern_type, rating, notes
+        
+    Returns:
+        FeedbackResponse with stored general feedback
+        
+    Raises:
+        HTTPException: If date format is invalid
+    """
+    # Validate date format
+    try:
+        datetime.strptime(request.date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format. Expected YYYY-MM-DD")
+    
+    # For general feedback, we need to get candle data from analysis
+    # Try to get from any available timeframe
+    mc1 = None
+    mc2 = None
+    
+    for timeframe in ["1D", "2D", "3D", "4D"]:
+        try:
+            analysis_data = load_analysis(timeframe)
+            if analysis_data:
+                for instr in analysis_data.get("instruments", []):
+                    if instr.get("instrument") == request.instrument:
+                        mc1 = instr.get("mc1", {})
+                        mc2 = instr.get("mc2", {})
+                        break
+                if mc1 and mc2:
+                    break
+        except Exception:
+            continue
+    
+    if not mc1 or not mc2:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Candle data not available for instrument {request.instrument}"
+        )
+    
+    # Calculate metrics
+    metrics = calculate_engulfing_metrics(mc1, mc2, request.pattern_type)
+    
+    # Store general feedback
+    filepath = store_general_feedback(
+        instrument=request.instrument,
+        date=request.date,
+        pattern_type=request.pattern_type,
+        rating=request.rating,
+        metrics=metrics,
+        candles={"mc1": mc1, "mc2": mc2},
+        notes=request.notes
+    )
+    
+    # Load the stored feedback to return
+    with open(filepath, 'r', encoding='utf-8') as f:
+        feedback_data = json.load(f)
+    
+    return FeedbackResponse(**feedback_data)
+
+
+@router.get("/engulfing/feedback", response_model=List[FeedbackResponse], tags=["engulfing"])
+async def get_feedback_list(
+    instrument: Optional[str] = Query(None, description="Filter by instrument"),
+    timeframe: Optional[str] = Query(None, description="Filter by timeframe (ignored if merged=true)"),
+    pattern_type: Optional[Literal["bullish", "bearish"]] = Query(None, description="Filter by pattern type"),
+    start_date: Optional[str] = Query(None, description="Start date in YYYY-MM-DD format"),
+    end_date: Optional[str] = Query(None, description="End date in YYYY-MM-DD format"),
+    merged: bool = Query(False, description="Return merged feedback (ignores timeframe)")
+):
+    """
+    Query stored feedback entries.
+    
+    Args:
+        instrument: Optional instrument filter
+        timeframe: Optional timeframe filter (ignored if merged=true)
+        pattern_type: Optional pattern type filter
+        start_date: Optional start date for date range
+        end_date: Optional end date for date range
+        merged: If True, return merged feedback
+        
+    Returns:
+        List of FeedbackResponse matching criteria
+    """
+    date_range = None
+    if start_date and end_date:
+        try:
+            datetime.strptime(start_date, "%Y-%m-%d")
+            datetime.strptime(end_date, "%Y-%m-%d")
+            date_range = (start_date, end_date)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid date format. Expected YYYY-MM-DD")
+    
+    feedback_list = get_feedback(
+        instrument=instrument,
+        timeframe=timeframe,
+        pattern_type=pattern_type,
+        date_range=date_range,
+        merged=merged
+    )
+    
+    return [FeedbackResponse(**f) for f in feedback_list]
+
+
+@router.get("/engulfing/statistics", response_model=StatisticsResponse, tags=["engulfing"])
+async def get_feedback_statistics(
+    pattern_type: Literal["bullish", "bearish"] = Query(..., description="Pattern type: bullish or bearish"),
+    instrument: Optional[str] = Query(None, description="Filter by instrument"),
+    use_merged: bool = Query(True, description="Use merged feedback (default: True)")
+):
+    """
+    Get statistics about feedback patterns.
+    
+    Uses merged feedback by default to provide comprehensive statistics
+    across all timeframes.
+    
+    Args:
+        pattern_type: Pattern type (bullish or bearish)
+        instrument: Optional instrument filter
+        use_merged: Whether to use merged feedback (default: True)
+        
+    Returns:
+        StatisticsResponse with statistics about good patterns
+    """
+    # Get feedback
+    if use_merged:
+        feedback_list = get_merged_feedback(instrument=instrument, pattern_type=pattern_type)
+    else:
+        feedback_list = get_feedback(instrument=instrument, pattern_type=pattern_type, merged=False)
+    
+    if not feedback_list:
+        return StatisticsResponse(
+            pattern_type=pattern_type,
+            use_merged=use_merged,
+            total_feedback_count=0,
+            average_rating=0.0,
+            position_distribution={},
+            metric_statistics={},
+            top_characteristics=[],
+            learned_patterns=None,
+            confidence_scores=None
+        )
+    
+    # Calculate statistics
+    total_count = len(feedback_list)
+    average_rating = sum(f.get("rating", 0) for f in feedback_list) / total_count
+    
+    # Position distribution
+    position_counts = {}
+    for f in feedback_list:
+        pos = f.get("metrics", {}).get("body_position", "unknown")
+        position_counts[pos] = position_counts.get(pos, 0) + 1
+    
+    # Metric statistics
+    metric_stats = {}
+    numeric_metrics = ["body_size_ratio", "body_overlap_percentage", "mc1_body_size", "mc2_body_size"]
+    for key in numeric_metrics:
+        values = [f.get("metrics", {}).get(key, 0) for f in feedback_list if isinstance(f.get("metrics", {}).get(key), (int, float))]
+        if values:
+            metric_stats[key] = {
+                "mean": sum(values) / len(values),
+                "min": min(values),
+                "max": max(values)
+            }
+    
+    # Top characteristics (high-rated patterns)
+    high_rated = [f for f in feedback_list if f.get("rating", 0) >= 8]
+    top_characteristics = []
+    if high_rated:
+        high_rated_positions = {}
+        for f in high_rated:
+            pos = f.get("metrics", {}).get("body_position", "unknown")
+            high_rated_positions[pos] = high_rated_positions.get(pos, 0) + 1
+        if high_rated_positions:
+            top_characteristics.append({
+                "characteristic": "body_position",
+                "value": max(high_rated_positions.items(), key=lambda x: x[1])[0],
+                "frequency": max(high_rated_positions.values()) / len(high_rated)
+            })
+    
+    # Learned patterns
+    learned_patterns = learn_from_feedback(pattern_type=pattern_type, use_merged=use_merged)
+    
+    # Confidence scores
+    confidence_scores = {}
+    if use_merged:
+        merged_with_confidence = [f for f in feedback_list if f.get("confidence_score") is not None]
+        if merged_with_confidence:
+            confidence_scores["average"] = sum(f.get("confidence_score", 0) for f in merged_with_confidence) / len(merged_with_confidence)
+            confidence_scores["min"] = min(f.get("confidence_score", 0) for f in merged_with_confidence)
+            confidence_scores["max"] = max(f.get("confidence_score", 0) for f in merged_with_confidence)
+    
+    return StatisticsResponse(
+        pattern_type=pattern_type,
+        use_merged=use_merged,
+        total_feedback_count=total_count,
+        average_rating=round(average_rating, 2),
+        position_distribution=position_counts,
+        metric_statistics=metric_stats,
+        top_characteristics=top_characteristics,
+        learned_patterns=learned_patterns,
+        confidence_scores=confidence_scores if confidence_scores else None
+    )
+
+
+@router.get("/engulfing/backtest", response_model=BacktestResponse, tags=["engulfing"])
+async def backtest_engulfing_patterns(
+    instrument: str = Query(..., description="Currency pair (e.g., GBP_USD)"),
+    pattern_type: Literal["bullish", "bearish"] = Query(..., description="Pattern type: bullish or bearish"),
+    start_date: str = Query(..., description="Start date in YYYY-MM-DD format"),
+    end_date: str = Query(..., description="End date in YYYY-MM-DD format"),
+    timeframe: str = Query(..., description="Timeframe: 1D, 2D, 3D, or 4D (case insensitive)")
+):
+    """
+    Backtest engulfing patterns against historical data.
+    
+    Args:
+        instrument: Currency pair
+        pattern_type: Pattern type (bullish or bearish)
+        start_date: Start date in YYYY-MM-DD format
+        end_date: End date in YYYY-MM-DD format
+        timeframe: Timeframe (1D, 2D, 3D, or 4D)
+        
+    Returns:
+        BacktestResponse with backtest results
+        
+    Raises:
+        HTTPException: If dates or timeframe are invalid
+    """
+    # Validate dates
+    try:
+        datetime.strptime(start_date, "%Y-%m-%d")
+        datetime.strptime(end_date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format. Expected YYYY-MM-DD")
+    
+    # Validate timeframe
+    try:
+        normalized_tf = normalize_timeframe(timeframe)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    
+    # Run backtest
+    try:
+        result = backtest_pattern(
+            instrument=instrument,
+            pattern_type=pattern_type,
+            start_date=start_date,
+            end_date=end_date,
+            timeframe=normalized_tf
+        )
+        
+        if "error" in result:
+            raise HTTPException(status_code=400, detail=result["error"])
+        
+        return BacktestResponse(**result)
+    except Exception as e:
+        logger.error(f"Backtest error: {e}")
+        raise HTTPException(status_code=500, detail=f"Backtest failed: {str(e)}")
