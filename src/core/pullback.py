@@ -395,9 +395,9 @@ def reverse_pullback_result(result: Dict, target_currency: str) -> Dict:
                 prev_week_high_new, 
                 prev_week_low_new
             )
-            # max_extension_percentage: highest point in current week relative to previous week range
+            # max_extension_percentage: how much the highest point extended beyond previous week's high
             # (using current_week_high_new which is 1/original_current_week_low)
-            max_extension_pct_new = calculate_pullback_percentage(
+            max_extension_pct_new = calculate_extension_percentage(
                 current_week_high_new, 
                 prev_week_high_new, 
                 prev_week_low_new
@@ -470,6 +470,36 @@ def calculate_pullback_percentage(
     
     pullback = ((current_price - prev_week_low) / (prev_week_high - prev_week_low)) * 100
     return round(pullback, 2)
+
+
+def calculate_extension_percentage(
+    current_price: float,
+    prev_week_high: float,
+    prev_week_low: float
+) -> Optional[float]:
+    """
+    Calculate extension percentage beyond previous week's high.
+    
+    Formula: (current_price - prev_week_high) / (prev_week_high - prev_week_low) * 100
+    
+    Where:
+    - 0% = at previous week's high (no extension)
+    - < 0% = below previous week's high (didn't reach it)
+    - > 0% = above previous week's high (extended beyond)
+    
+    Args:
+        current_price: Current price of the instrument
+        prev_week_high: Previous week's high
+        prev_week_low: Previous week's low
+        
+    Returns:
+        Extension percentage as float, or None if range is zero
+    """
+    if prev_week_high == prev_week_low:
+        return None
+    
+    extension = ((current_price - prev_week_high) / (prev_week_high - prev_week_low)) * 100
+    return round(extension, 2)
 
 
 def has_tested_high(current_price: float, prev_week_high: float, tolerance: float = 0.001) -> bool:
@@ -604,8 +634,8 @@ def analyze_pullback_for_instrument(
     if current_week_low is not None and current_week_high is not None:
         # Max pullback = lowest point reached this week relative to previous week range
         max_pullback_pct = calculate_pullback_percentage(current_week_low, prev_week_high, prev_week_low)
-        # Max extension = highest point reached this week relative to previous week range
-        max_extension_pct = calculate_pullback_percentage(current_week_high, prev_week_high, prev_week_low)
+        # Max extension = how much the highest point extended beyond previous week's high
+        max_extension_pct = calculate_extension_percentage(current_week_high, prev_week_high, prev_week_low)
     
     # Format previous week time
     try:
