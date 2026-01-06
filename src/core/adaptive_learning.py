@@ -329,3 +329,6 @@ def _calculate_characteristics_boost(current_metrics: Dict, learned_patterns: Di
     
     return min(1.0, boost)
 
+
+
+

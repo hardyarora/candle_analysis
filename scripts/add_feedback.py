@@ -91,15 +91,15 @@ def validate_timeframe(timeframe: str) -> tuple[bool, str]:
 
 
 def validate_rating(rating: str) -> tuple[bool, str]:
-    """Validate rating (1-10)."""
+    """Validate rating (0-10)."""
     try:
         rating_int = int(rating)
-        if 1 <= rating_int <= 10:
+        if 0 <= rating_int <= 10:
             return True, ""
         else:
-            return False, "Rating must be between 1 and 10"
+            return False, "Rating must be between 0 and 10"
     except ValueError:
-        return False, "Rating must be a number between 1 and 10"
+        return False, "Rating must be a number between 0 and 10"
 
 
 def validate_date(date_str: str) -> tuple[bool, str]:
@@ -271,12 +271,18 @@ Examples:
         "rating",
         nargs="?",
         type=int,
-        help="Rating (1-10)"
+        help="Rating (0-10, where 0 means no rating/minimum)"
     )
     parser.add_argument(
         "--date",
         type=str,
         help="Date in YYYY-MM-DD format (default: latest pattern)"
+    )
+    parser.add_argument(
+        "--ignore-candles",
+        type=int,
+        default=1,
+        help="Number of candles to ignore at the end when finding latest pattern (default: 1)"
     )
     parser.add_argument(
         "--pattern-type",
@@ -287,6 +293,11 @@ Examples:
         "--notes",
         type=str,
         help="Optional notes"
+    )
+    parser.add_argument(
+        "--yes", "-y",
+        action="store_true",
+        help="Skip confirmation prompt (auto-confirm)"
     )
     
     args = parser.parse_args()
@@ -323,8 +334,8 @@ Examples:
     
     if args.rating is not None:
         rating_int = args.rating
-        if not (1 <= rating_int <= 10):
-            print("Error: Rating must be between 1 and 10")
+        if not (0 <= rating_int <= 10):
+            print("Error: Rating must be between 0 and 10")
             return 1
     else:
         rating = prompt_input(
@@ -334,7 +345,10 @@ Examples:
         rating_int = int(rating)
     
     # Optional fields
-    if args.date or args.pattern_type or args.notes:
+    # If all required args provided, skip interactive prompts for optional fields
+    has_all_required = args.currency and args.timeframe and args.rating is not None
+    
+    if has_all_required:
         # Non-interactive mode - use provided args or defaults
         date_input = args.date or ""
         pattern_type_input = args.pattern_type or ""
@@ -397,7 +411,7 @@ Examples:
             return 1
         target_date = date_input
     else:
-        result = get_latest_pattern(candles, n_candles, ignore_candles=1)
+        result = get_latest_pattern(candles, n_candles, ignore_candles=args.ignore_candles)
         if not result:
             print("Error: Could not find latest pattern")
             return 1
@@ -437,8 +451,12 @@ Examples:
     # Verify it's an engulfing pattern
     if not has_bullish_engulfing and not has_bearish_engulfing:
         print(f"Warning: No engulfing pattern detected. Relation: {relation}")
-        confirm = input("Continue anyway? (y/n): ").strip().lower()
-        if confirm != 'y':
+        if has_all_required or args.yes:
+            print("Auto-continuing (all required arguments provided)...")
+            confirm_continue = 'y'
+        else:
+            confirm_continue = input("Continue anyway? (y/n): ").strip().lower()
+        if confirm_continue != 'y':
             print("Cancelled.")
             return 0
     
@@ -470,8 +488,14 @@ Examples:
         print(f"Notes: {notes}")
     print()
     
-    # Confirm
-    confirm = input("Store this feedback? (y/n): ").strip().lower()
+    # Confirm (skip if --yes flag or all required args provided)
+    if args.yes or has_all_required:
+        confirm = 'y'
+        if has_all_required:
+            print("Auto-confirming (all required arguments provided)...")
+    else:
+        confirm = input("Store this feedback? (y/n): ").strip().lower()
+    
     if confirm != 'y':
         print("Cancelled.")
         return 0

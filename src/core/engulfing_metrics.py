@@ -83,7 +83,10 @@ def calculate_body_position(
 
 def calculate_body_overlap(mc1: Dict, mc2: Dict) -> float:
     """
-    Calculate the percentage of previous candle body that overlaps with new candle body.
+    Calculate the percentage of combined body range that overlaps.
+    
+    The overlap percentage is calculated as the overlap size divided by
+    the total combined range of both candle bodies.
     
     Args:
         mc1: Previous candle dictionary
@@ -110,12 +113,16 @@ def calculate_body_overlap(mc1: Dict, mc2: Dict) -> float:
         return 0.0
     
     overlap_size = overlap_top - overlap_bottom
-    mc1_body_size = mc1_body_top - mc1_body_bottom
     
-    if mc1_body_size == 0:
+    # Calculate total combined range of both bodies
+    total_combined_top = max(mc1_body_top, mc2_body_top)
+    total_combined_bottom = min(mc1_body_bottom, mc2_body_bottom)
+    total_combined_range = total_combined_top - total_combined_bottom
+    
+    if total_combined_range == 0:
         return 0.0
     
-    return (overlap_size / mc1_body_size) * 100.0
+    return (overlap_size / total_combined_range) * 100.0
 
 
 def calculate_whole_body_position(
