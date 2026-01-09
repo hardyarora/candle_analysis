@@ -73,3 +73,4 @@ The fix was tested with EURCHF 2D ignore=2:
 - Prevents similar issues with other instruments during holiday periods
 
 
+
