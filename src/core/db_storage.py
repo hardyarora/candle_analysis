@@ -327,3 +327,135 @@ def run_and_store_analysis(
     except Exception as e:
         logger.error(f"Failed to run and store analysis: {e}", exc_info=True)
         return None
+
+
+def store_strength_weakness_snapshot(
+    period: str,
+    response_data: Dict,
+    snapshot_timestamp: Optional[datetime] = None,
+    ignore_candles: int = 0
+) -> Optional[int]:
+    """
+    Store a strength-weakness snapshot in the database.
+    
+    Args:
+        period: Period string ('daily', 'weekly', 'monthly')
+        response_data: Full strength-weakness response data dictionary
+        snapshot_timestamp: Timestamp for the snapshot (default: current time)
+        ignore_candles: Number of candles ignored in analysis
+        
+    Returns:
+        ID of the inserted snapshot record, or None if insertion failed
+    """
+    if snapshot_timestamp is None:
+        snapshot_timestamp = datetime.now()
+    
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Insert into strength_weakness_snapshots
+            insert_query = """
+                INSERT INTO strength_weakness_snapshots 
+                (snapshot_timestamp, period, ignore_candles, response_data)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (snapshot_timestamp, period) 
+                DO UPDATE SET 
+                    response_data = EXCLUDED.response_data,
+                    ignore_candles = EXCLUDED.ignore_candles,
+                    created_at = CURRENT_TIMESTAMP
+                RETURNING id
+            """
+            
+            cursor.execute(
+                insert_query,
+                (
+                    snapshot_timestamp,
+                    period,
+                    ignore_candles,
+                    Json(response_data)
+                )
+            )
+            
+            snapshot_id = cursor.fetchone()[0]
+            
+            # Extract and insert currency data
+            currencies = response_data.get("currencies", {})
+            
+            if currencies:
+                # Delete existing currency data for this snapshot
+                cursor.execute(
+                    "DELETE FROM currency_strength_weakness WHERE snapshot_id = %s",
+                    (snapshot_id,)
+                )
+                
+                # Insert currency data
+                currency_insert = """
+                    INSERT INTO currency_strength_weakness 
+                    (snapshot_id, snapshot_timestamp, period, currency, 
+                     tested_high_count, tested_low_count, strength, weakness,
+                     tested_high_instruments, tested_low_instruments)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """
+                
+                for currency, data in currencies.items():
+                    if isinstance(data, dict):
+                        cursor.execute(
+                            currency_insert,
+                            (
+                                snapshot_id,
+                                snapshot_timestamp,
+                                period,
+                                currency,
+                                data.get("tested_high_count", 0),
+                                data.get("tested_low_count", 0),
+                                data.get("strength"),
+                                data.get("weakness"),
+                                data.get("tested_high", []),
+                                data.get("tested_low", []),
+                            )
+                        )
+            
+            conn.commit()
+            logger.info(f"Stored strength-weakness snapshot: period={period}, snapshot_id={snapshot_id}")
+            return snapshot_id
+            
+    except Exception as e:
+        logger.error(f"Failed to store strength-weakness snapshot: {e}", exc_info=True)
+        return None
+
+
+def get_latest_strength_weakness(period: str) -> Optional[Dict]:
+    """
+    Get the latest strength-weakness snapshot for a period.
+    
+    Args:
+        period: Period string ('daily', 'weekly', 'monthly')
+        
+    Returns:
+        Dictionary with snapshot data, or None if not found
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            
+            cursor.execute(
+                """
+                SELECT id, snapshot_timestamp, period, ignore_candles,
+                       response_data, created_at
+                FROM strength_weakness_snapshots
+                WHERE period = %s
+                ORDER BY snapshot_timestamp DESC
+                LIMIT 1
+                """,
+                (period,)
+            )
+            
+            row = cursor.fetchone()
+            if row:
+                return dict(row)
+            return None
+            
+    except Exception as e:
+        logger.error(f"Failed to get latest strength-weakness: {e}", exc_info=True)
+        return None

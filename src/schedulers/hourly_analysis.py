@@ -14,10 +14,12 @@ import argparse
 from datetime import datetime
 from pathlib import Path
 
-from ..core.db_storage import run_and_store_analysis
+from ..core.db_storage import run_and_store_analysis, store_strength_weakness_snapshot
 from ..core.database import init_connection_pool, test_connection, close_connection_pool
 from ..core.config import LOGS_DIR, DEFAULT_IGNORE_CANDLES
 from ..utils.timeframe import normalize_timeframe
+import httpx
+import asyncio
 
 
 def setup_logging() -> logging.Logger:
@@ -63,11 +65,61 @@ def setup_logging() -> logging.Logger:
     return logger
 
 
+async def fetch_strength_weakness(
+    base_url: str,
+    period: str,
+    ignore_candles: int = 0,
+    force_oanda: bool = False,
+    logger: logging.Logger = None
+) -> Optional[Dict]:
+    """
+    Fetch strength-weakness data from the API endpoint.
+    
+    Args:
+        base_url: Base URL of the API
+        period: Period ('daily', 'weekly', 'monthly')
+        ignore_candles: Number of candles to ignore
+        force_oanda: Force loading from OANDA API
+        logger: Logger instance
+        
+    Returns:
+        Response data dictionary, or None if failed
+    """
+    if logger is None:
+        logger = logging.getLogger("hourly_analysis")
+    
+    url = f"{base_url}/api/candle_analysis/api/v1/strength-weakness"
+    params = {
+        "period": period,
+        "ignore_candles": ignore_candles,
+    }
+    if force_oanda:
+        params["force_oanda"] = "true"
+    
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            logger.info(f"Fetching strength-weakness data: period={period}, url={url}")
+            response = await client.get(url, params=params)
+            if response.status_code == 200:
+                data = response.json()
+                logger.info(f"✓ Successfully fetched strength-weakness data for period={period}")
+                return data
+            else:
+                logger.error(f"✗ Failed to fetch strength-weakness: HTTP {response.status_code}: {response.text[:100]}")
+                return None
+    except Exception as e:
+        logger.error(f"✗ Error fetching strength-weakness: {e}", exc_info=True)
+        return None
+
+
 def run_hourly_analysis(
     daily_timeframes: list = None,
     weekly_timeframes: list = None,
     ignore_candles: int = DEFAULT_IGNORE_CANDLES,
     force_oanda: bool = False,
+    base_url: str = "http://localhost:8000",
+    store_strength_weakness: bool = True,
+    strength_weakness_periods: list = None,
     logger: logging.Logger = None
 ) -> dict:
     """
@@ -92,12 +144,20 @@ def run_hourly_analysis(
     if weekly_timeframes is None:
         weekly_timeframes = ['W']
     
+    if strength_weakness_periods is None:
+        strength_weakness_periods = ['weekly']
+    
     results = {
         "success": [],
         "failed": [],
+        "strength_weakness_success": [],
+        "strength_weakness_failed": [],
         "total": 0,
         "successful": 0,
-        "failed_count": 0
+        "failed_count": 0,
+        "sw_total": 0,
+        "sw_successful": 0,
+        "sw_failed": 0
     }
     
     # Test database connection
@@ -183,6 +243,64 @@ def run_hourly_analysis(
         
         results["total"] += 1
     
+    # Process strength-weakness endpoints
+    if store_strength_weakness:
+        logger.info("Processing strength-weakness endpoints...")
+        for period in strength_weakness_periods:
+            try:
+                logger.info(f"Fetching and storing strength-weakness: period={period}")
+                
+                # Fetch data from API (using asyncio.run since we're in a sync function)
+                response_data = asyncio.run(
+                    fetch_strength_weakness(
+                        base_url=base_url,
+                        period=period,
+                        ignore_candles=0,  # Default for strength-weakness
+                        force_oanda=force_oanda,
+                        logger=logger
+                    )
+                )
+                
+                if response_data:
+                    # Store in database
+                    snapshot_id = store_strength_weakness_snapshot(
+                        period=period,
+                        response_data=response_data,
+                        ignore_candles=0
+                    )
+                    
+                    if snapshot_id:
+                        results["strength_weakness_success"].append({
+                            "period": period,
+                            "snapshot_id": snapshot_id
+                        })
+                        results["sw_successful"] += 1
+                        logger.info(f"✓ Successfully stored strength-weakness {period} (snapshot_id={snapshot_id})")
+                    else:
+                        results["strength_weakness_failed"].append({
+                            "period": period,
+                            "error": "Failed to store snapshot"
+                        })
+                        results["sw_failed"] += 1
+                        logger.error(f"✗ Failed to store strength-weakness {period}")
+                else:
+                    results["strength_weakness_failed"].append({
+                        "period": period,
+                        "error": "Failed to fetch data from API"
+                    })
+                    results["sw_failed"] += 1
+                    logger.error(f"✗ Failed to fetch strength-weakness {period}")
+                    
+            except Exception as e:
+                results["strength_weakness_failed"].append({
+                    "period": period,
+                    "error": str(e)
+                })
+                results["sw_failed"] += 1
+                logger.error(f"✗ Error processing strength-weakness {period}: {e}", exc_info=True)
+            
+            results["sw_total"] += 1
+    
     return results
 
 
@@ -228,6 +346,34 @@ Examples:
         help="Force loading from OANDA API instead of cache"
     )
     
+    parser.add_argument(
+        "--base-url",
+        type=str,
+        default="http://localhost:8000",
+        help="Base URL of the API (default: http://localhost:8000)"
+    )
+    
+    parser.add_argument(
+        "--store-strength-weakness",
+        action="store_true",
+        default=True,
+        help="Store strength-weakness data (default: True)"
+    )
+    
+    parser.add_argument(
+        "--no-store-strength-weakness",
+        dest="store_strength_weakness",
+        action="store_false",
+        help="Skip storing strength-weakness data"
+    )
+    
+    parser.add_argument(
+        "--strength-weakness-periods",
+        nargs="+",
+        default=['weekly'],
+        help="Strength-weakness periods to fetch (default: weekly)"
+    )
+    
     args = parser.parse_args()
     
     # Set up logging
@@ -241,6 +387,9 @@ Examples:
         logger.info(f"Weekly timeframes: {args.weekly}")
         logger.info(f"Ignore candles: {args.ignore_candles}")
         logger.info(f"Force OANDA: {args.force_oanda}")
+        logger.info(f"Base URL: {args.base_url}")
+        logger.info(f"Store strength-weakness: {args.store_strength_weakness}")
+        logger.info(f"Strength-weakness periods: {args.strength_weakness_periods}")
         
         # Initialize database connection pool
         logger.info("Initializing database connection pool...")
@@ -252,6 +401,9 @@ Examples:
             weekly_timeframes=args.weekly,
             ignore_candles=args.ignore_candles,
             force_oanda=args.force_oanda,
+            base_url=args.base_url,
+            store_strength_weakness=args.store_strength_weakness,
+            strength_weakness_periods=args.strength_weakness_periods,
             logger=logger
         )
         
@@ -263,6 +415,11 @@ Examples:
         logger.info(f"Successful: {results['successful']}")
         logger.info(f"Failed: {results['failed_count']}")
         
+        if results.get('sw_total', 0) > 0:
+            logger.info(f"Strength-weakness total: {results['sw_total']}")
+            logger.info(f"Strength-weakness successful: {results['sw_successful']}")
+            logger.info(f"Strength-weakness failed: {results['sw_failed']}")
+        
         if results['success']:
             logger.info("Successful executions:")
             for success in results['success']:
@@ -273,11 +430,22 @@ Examples:
             for failure in results['failed']:
                 logger.warning(f"  ✗ {failure['timeframe']} ({failure['granularity']}): {failure['error']}")
         
-        if results['failed_count'] == 0:
+        if results.get('strength_weakness_success'):
+            logger.info("Successful strength-weakness executions:")
+            for success in results['strength_weakness_success']:
+                logger.info(f"  ✓ {success['period']} - snapshot_id={success['snapshot_id']}")
+        
+        if results.get('strength_weakness_failed'):
+            logger.warning("Failed strength-weakness executions:")
+            for failure in results['strength_weakness_failed']:
+                logger.warning(f"  ✗ {failure['period']}: {failure['error']}")
+        
+        total_failed = results['failed_count'] + results.get('sw_failed', 0)
+        if total_failed == 0:
             logger.info("All analyses completed successfully")
             sys.exit(0)
         else:
-            logger.warning("Some analyses failed")
+            logger.warning(f"Some analyses failed (analysis: {results['failed_count']}, strength-weakness: {results.get('sw_failed', 0)})")
             sys.exit(1)
             
     except KeyboardInterrupt:

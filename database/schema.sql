@@ -152,3 +152,89 @@ BEGIN
     ORDER BY cas.snapshot_timestamp DESC;
 END;
 $$ LANGUAGE plpgsql;
+
+-- Table for storing strength-weakness categorization data
+CREATE TABLE IF NOT EXISTS strength_weakness_snapshots (
+    id SERIAL PRIMARY KEY,
+    snapshot_timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
+    period VARCHAR(10) NOT NULL,  -- 'daily', 'weekly', 'monthly'
+    ignore_candles INTEGER DEFAULT 0,
+    response_data JSONB NOT NULL,  -- Full response data as JSON
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    
+    -- Indexes for efficient querying
+    CONSTRAINT unique_strength_weakness_snapshot UNIQUE (snapshot_timestamp, period)
+);
+
+-- Indexes for strength_weakness_snapshots
+CREATE INDEX IF NOT EXISTS idx_sw_snapshot_timestamp ON strength_weakness_snapshots(snapshot_timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_sw_period ON strength_weakness_snapshots(period);
+CREATE INDEX IF NOT EXISTS idx_sw_created_at ON strength_weakness_snapshots(created_at DESC);
+
+-- GIN index for JSONB queries
+CREATE INDEX IF NOT EXISTS idx_sw_response_data_gin ON strength_weakness_snapshots USING GIN (response_data);
+
+-- Table for extracted currency strength/weakness data
+CREATE TABLE IF NOT EXISTS currency_strength_weakness (
+    id SERIAL PRIMARY KEY,
+    snapshot_id INTEGER REFERENCES strength_weakness_snapshots(id) ON DELETE CASCADE,
+    snapshot_timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
+    period VARCHAR(10) NOT NULL,
+    currency VARCHAR(10) NOT NULL,  -- Currency code (e.g., 'USD', 'EUR')
+    tested_high_count INTEGER DEFAULT 0,
+    tested_low_count INTEGER DEFAULT 0,
+    strength NUMERIC(5, 4),  -- 0.0000 to 1.0000
+    weakness NUMERIC(5, 4),  -- 0.0000 to 1.0000
+    tested_high_instruments TEXT[],  -- Array of instrument names
+    tested_low_instruments TEXT[],  -- Array of instrument names
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Indexes for currency_strength_weakness
+CREATE INDEX IF NOT EXISTS idx_csw_snapshot_id ON currency_strength_weakness(snapshot_id);
+CREATE INDEX IF NOT EXISTS idx_csw_timestamp ON currency_strength_weakness(snapshot_timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_csw_period ON currency_strength_weakness(period);
+CREATE INDEX IF NOT EXISTS idx_csw_currency ON currency_strength_weakness(currency);
+CREATE INDEX IF NOT EXISTS idx_csw_strength ON currency_strength_weakness(strength DESC);
+CREATE INDEX IF NOT EXISTS idx_csw_weakness ON currency_strength_weakness(weakness DESC);
+
+-- Composite index for common queries
+CREATE INDEX IF NOT EXISTS idx_csw_period_timestamp ON currency_strength_weakness(period, snapshot_timestamp DESC);
+
+-- View for latest strength-weakness by period
+CREATE OR REPLACE VIEW latest_strength_weakness_by_period AS
+SELECT DISTINCT ON (period)
+    id,
+    snapshot_timestamp,
+    period,
+    ignore_candles,
+    response_data,
+    created_at
+FROM strength_weakness_snapshots
+ORDER BY period, snapshot_timestamp DESC;
+
+-- Function to get latest strength-weakness snapshot
+CREATE OR REPLACE FUNCTION get_latest_strength_weakness(p_period VARCHAR)
+RETURNS TABLE (
+    id INTEGER,
+    snapshot_timestamp TIMESTAMP WITH TIME ZONE,
+    period VARCHAR,
+    ignore_candles INTEGER,
+    response_data JSONB,
+    created_at TIMESTAMP WITH TIME ZONE
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT 
+        sws.id,
+        sws.snapshot_timestamp,
+        sws.period,
+        sws.ignore_candles,
+        sws.response_data,
+        sws.created_at
+    FROM strength_weakness_snapshots sws
+    WHERE sws.period = p_period
+    ORDER BY sws.snapshot_timestamp DESC
+    LIMIT 1;
+END;
+$$ LANGUAGE plpgsql;
