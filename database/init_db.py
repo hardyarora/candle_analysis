@@ -27,27 +27,31 @@ def main():
         logger.error(f"Schema file not found: {schema_file}")
         sys.exit(1)
     
-    logger.info("Initializing database connection pool...")
+    exit_code = 1
     try:
-        init_connection_pool()
-    except Exception as e:
-        logger.error(f"Failed to initialize connection pool: {e}")
-        sys.exit(1)
-    
-    logger.info("Testing database connection...")
-    if not test_connection():
-        logger.error("Database connection test failed")
-        sys.exit(1)
-    
-    logger.info(f"Executing schema file: {schema_file}")
-    if execute_schema_file(str(schema_file)):
-        logger.info("Database schema initialized successfully")
-        sys.exit(0)
-    else:
-        logger.error("Failed to initialize database schema")
-        sys.exit(1)
+        logger.info("Initializing database connection pool...")
+        try:
+            init_connection_pool()
+        except Exception as e:
+            logger.error(f"Failed to initialize connection pool: {e}")
+            return 1
+        
+        logger.info("Testing database connection...")
+        if not test_connection():
+            logger.error("Database connection test failed")
+            return 1
+        
+        logger.info(f"Executing schema file: {schema_file}")
+        if execute_schema_file(str(schema_file)):
+            logger.info("Database schema initialized successfully")
+            exit_code = 0
+        else:
+            logger.error("Failed to initialize database schema")
+            exit_code = 1
     finally:
         close_connection_pool()
+    
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":
