@@ -163,8 +163,8 @@ Get current analysis for a timeframe.
   "timestamp": "2025-01-01T00:00:00",
   "ignore_candles": 1,
   "patterns": {
-    "Bullish engulfing + upclose": ["GBPUSD", "EURUSD"],
-    "Bearish engulfing": ["USDJPY"]
+    "bullish engulfing + upclose": ["GBPUSD", "EURUSD"],
+    "bearish engulfing": ["USDJPY"]
   },
   "instruments": [
     {
@@ -241,15 +241,26 @@ This ensures:
 
 ## Pattern Detection
 
-The system detects the following patterns:
+The system detects the following patterns (in priority order):
 
-1. **Upclose ⬆️**: Current period closes above previous period's high
-2. **Downclose ⬇️**: Current period closes below previous period's low
-3. **Bullish Engulfing**: Current period's body engulfs previous period's body, and closes higher
-4. **Bearish Engulfing**: Current period's body engulfs previous period's body, and closes lower
-5. **Neutral**: No clear directional pattern
+### Bullish Patterns
+1. **Bullish engulfing + upclose**: Has engulfing AND upclose AND bullish (strongest bullish signal)
+2. **Bullish engulfing**: Has engulfing AND bullish (no upclose)
+   - **Color Requirements**: MC1 (previous) must be RED (close < open) AND MC2 (current) must be GREEN (close > open)
+3. **Bullish + upclose**: Has upclose AND bullish BUT NO engulfing
+4. **Upclose**: Has upclose but not bullish and not engulfing
 
-Patterns can combine (e.g., "upclose ⬆️ + bullish engulfing").
+### Bearish Patterns
+1. **Bearish engulfing + downclose**: Has engulfing AND downclose AND bearish (strongest bearish signal)
+2. **Bearish engulfing**: Has engulfing AND bearish (no downclose)
+   - **Color Requirements**: MC1 (previous) must be GREEN (close > open) AND MC2 (current) must be RED (close < open)
+3. **Bearish + downclose**: Has downclose AND bearish BUT NO engulfing
+4. **Downclose**: Has downclose but not bearish and not engulfing
+
+### Other
+- **Neutral**: No clear directional pattern
+
+**Note**: Patterns are classified based on priority. For example, if a pattern has both engulfing and upclose, it will be classified as "Bullish engulfing + upclose" (highest priority) rather than just "Bullish engulfing" or "Bullish + upclose".
 
 ## Testing
 

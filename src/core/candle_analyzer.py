@@ -140,15 +140,62 @@ def merge_candles(candles: List[Dict]) -> Optional[Dict]:
     - close = last candle's close
     - time = first candle's time
     
+    Holiday/Vacation Gap Handling:
+    - If there's a gap > 1 day between any consecutive candles (indicating holidays/vacations),
+      return only the last candle instead of merging
+    - This ensures merged periods represent true consecutive trading days
+    - Example: If merging Dec 30 and Jan 1 (with Dec 31 holiday), return only Jan 1 candle
+    
     Args:
         candles: List of candle dictionaries from OANDA
         
     Returns:
-        Merged candle dictionary or None if empty
+        Merged candle dictionary, or the last candle only if gaps detected, or None if empty
     """
     if not candles:
         return None
     
+    # If only one candle, return it directly
+    if len(candles) == 1:
+        c = candles[0]
+        return {
+            "high": float(c["mid"]["h"]),
+            "low": float(c["mid"]["l"]),
+            "open": c["mid"]["o"],
+            "close": c["mid"]["c"],
+            "time": c["time"],
+            "candle_count": 1
+        }
+    
+    # Check for holiday/vacation gaps (>1 day between consecutive candles)
+    has_gap = False
+    for i in range(len(candles) - 1):
+        try:
+            time1 = datetime.datetime.fromisoformat(candles[i]["time"].replace("Z", "").replace(".000000000", ""))
+            time2 = datetime.datetime.fromisoformat(candles[i + 1]["time"].replace("Z", "").replace(".000000000", ""))
+            gap_days = (time2 - time1).days
+            if gap_days > 1:
+                has_gap = True
+                logger.debug(f"Holiday gap detected: {gap_days} days between {candles[i]['time'][:10]} and {candles[i+1]['time'][:10]}")
+                break
+        except Exception as e:
+            logger.warning(f"Error parsing candle dates for gap detection: {e}")
+            # If we can't parse dates, continue with merge (fallback to original behavior)
+    
+    # If gap detected, return only the last candle (most recent complete candle)
+    if has_gap:
+        logger.debug(f"Gap detected in candle sequence, using last candle only instead of merging")
+        c = candles[-1]
+        return {
+            "high": float(c["mid"]["h"]),
+            "low": float(c["mid"]["l"]),
+            "open": c["mid"]["o"],
+            "close": c["mid"]["c"],
+            "time": c["time"],
+            "candle_count": 1
+        }
+    
+    # Normal merge: no gaps detected
     highs = [float(c["mid"]["h"]) for c in candles]
     lows = [float(c["mid"]["l"]) for c in candles]
     
@@ -223,9 +270,11 @@ def analyze_candle_relation(mc1: Dict, mc2: Dict, engulfing_threshold_percent: f
     top_engulfs = mc2_body_top >= (mc1_body_top - threshold_absolute)
     
     if bottom_engulfs and top_engulfs:
-        if mc2_close > mc2_open:  # mc2 is bullish
+        # For bullish engulfing: MC1 must be red (close < open) AND MC2 must be green (close > open)
+        if mc2_close > mc2_open and mc1_close < mc1_open:  # mc2 is bullish, mc1 is bearish
             patterns.append("bullish engulfing")
-        elif mc2_close < mc2_open:  # mc2 is bearish
+        # For bearish engulfing: MC1 must be green (close > open) AND MC2 must be red (close < open)
+        elif mc2_close < mc2_open and mc1_close > mc1_open:  # mc2 is bearish, mc1 is bullish
             patterns.append("bearish engulfing")
     
     if not patterns:
@@ -292,6 +341,8 @@ def analyze_all_currencies(timeframe: str, ignore_candles: int = DEFAULT_IGNORE_
         candles_to_process = candles[:-ignore_candles] if ignore_candles > 0 else candles
         
         # Get merged candles
+        # Note: merge_candles() automatically handles holiday/vacation gaps (>1 day)
+        # by returning only the last candle instead of merging when gaps are detected
         mc2_candles = candles_to_process[-n_candles:]
         mc1_candles = candles_to_process[-(n_candles * 2):-n_candles]
         
@@ -361,30 +412,48 @@ def analyze_all_currencies(timeframe: str, ignore_candles: int = DEFAULT_IGNORE_
         instrument_name = instrument.replace("_", "")
         
         # Track patterns for the instrument
+        # Pattern classification priority order:
+        # 1. Bullish engulfing + upclose (highest priority - strongest bullish signal)
+        # 2. Bullish engulfing
+        # 3. Bullish + upclose (no engulfing)
+        # 4. Upclose (no engulfing, not bullish)
+        # 5. Bearish engulfing + downclose (highest priority - strongest bearish signal)
+        # 6. Bearish engulfing
+        # 7. Bearish + downclose (no engulfing)
+        # 8. Downclose (no engulfing, not bearish)
+        
         if has_bullish_engulfing:
             if has_upclose:
-                pattern_instruments["Bullish engulfing + upclose"].add(instrument_name)
+                # Category: Bullish engulfing + upclose (strongest bullish signal)
+                pattern_instruments["bullish engulfing + upclose"].add(instrument_name)
             else:
-                pattern_instruments["Bullish engulfing"].add(instrument_name)
+                # Category: Bullish engulfing
+                pattern_instruments["bullish engulfing"].add(instrument_name)
         
         if has_bearish_engulfing:
             if has_downclose:
-                pattern_instruments["Bearish engulfing + downclose"].add(instrument_name)
+                # Category: Bearish engulfing + downclose (strongest bearish signal)
+                pattern_instruments["bearish engulfing + downclose"].add(instrument_name)
             else:
-                pattern_instruments["Bearish engulfing"].add(instrument_name)
+                # Category: Bearish engulfing
+                pattern_instruments["bearish engulfing"].add(instrument_name)
         
         # Standalone bullish/bearish with upclose/downclose (without engulfing)
         if has_upclose and not has_bullish_engulfing and not has_bearish_engulfing:
             if is_bullish:
-                pattern_instruments["Bullish + upclose"].add(instrument_name)
+                # Category: Bullish + upclose (no engulfing)
+                pattern_instruments["bullish + upclose"].add(instrument_name)
             else:
-                pattern_instruments["Upclose"].add(instrument_name)
+                # Category: Upclose (no engulfing, not bullish)
+                pattern_instruments["upclose"].add(instrument_name)
         
         if has_downclose and not has_bullish_engulfing and not has_bearish_engulfing:
             if is_bearish:
-                pattern_instruments["Bearish + downclose"].add(instrument_name)
+                # Category: Bearish + downclose (no engulfing)
+                pattern_instruments["bearish + downclose"].add(instrument_name)
             else:
-                pattern_instruments["Downclose"].add(instrument_name)
+                # Category: Downclose (no engulfing, not bearish)
+                pattern_instruments["downclose"].add(instrument_name)
     
     # Convert sets to sorted lists
     patterns = {}

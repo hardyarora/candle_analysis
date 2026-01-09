@@ -91,6 +91,24 @@ class TestAnalyzeCandleRelation:
         relation = analyze_candle_relation(mc1, mc2)
         assert "bearish engulfing" in relation
     
+    def test_bullish_engulfing_requires_red_mc1(self):
+        """Test that bullish engulfing requires MC1 to be red (close < open)."""
+        # MC1 is green (close > open), MC2 is green - should NOT be bullish engulfing
+        mc1 = {"high": 1.1000, "low": 1.0900, "open": "1.0920", "close": "1.0950"}  # MC1 green
+        mc2 = {"high": 1.1100, "low": 1.0850, "open": "1.0880", "close": "1.1050"}  # MC2 green, engulfs
+        
+        relation = analyze_candle_relation(mc1, mc2)
+        assert "bullish engulfing" not in relation
+    
+    def test_bearish_engulfing_requires_green_mc1(self):
+        """Test that bearish engulfing requires MC1 to be green (close > open)."""
+        # MC1 is red (close < open), MC2 is red - should NOT be bearish engulfing
+        mc1 = {"high": 1.1000, "low": 1.0900, "open": "1.0950", "close": "1.0920"}  # MC1 red
+        mc2 = {"high": 1.1050, "low": 1.0850, "open": "1.1050", "close": "1.0880"}  # MC2 red, engulfs
+        
+        relation = analyze_candle_relation(mc1, mc2)
+        assert "bearish engulfing" not in relation
+    
     def test_neutral_pattern(self):
         """Test neutral pattern when no special patterns detected."""
         mc1 = {"high": 1.1000, "low": 1.0900, "open": "1.0950", "close": "1.0950"}

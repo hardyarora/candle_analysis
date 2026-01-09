@@ -416,28 +416,28 @@ def analyze_all_currencies(timeframe: str, ignore_candles: int = 1) -> Dict:
         # Track patterns for the instrument
         if has_bullish_engulfing:
             if has_upclose:
-                pattern_instruments["Bullish engulfing + upclose"].add(instrument_name)
+                pattern_instruments["bullish engulfing + upclose"].add(instrument_name)
             else:
-                pattern_instruments["Bullish engulfing"].add(instrument_name)
+                pattern_instruments["bullish engulfing"].add(instrument_name)
         
         if has_bearish_engulfing:
             if has_downclose:
-                pattern_instruments["Bearish engulfing + downclose"].add(instrument_name)
+                pattern_instruments["bearish engulfing + downclose"].add(instrument_name)
             else:
-                pattern_instruments["Bearish engulfing"].add(instrument_name)
+                pattern_instruments["bearish engulfing"].add(instrument_name)
         
         # Standalone bullish/bearish with upclose/downclose (without engulfing)
         if has_upclose and not has_bullish_engulfing and not has_bearish_engulfing:
             if is_bullish:
-                pattern_instruments["Bullish + upclose"].add(instrument_name)
+                pattern_instruments["bullish + upclose"].add(instrument_name)
             else:
-                pattern_instruments["Upclose"].add(instrument_name)
+                pattern_instruments["upclose"].add(instrument_name)
         
         if has_downclose and not has_bullish_engulfing and not has_bearish_engulfing:
             if is_bearish:
-                pattern_instruments["Bearish + downclose"].add(instrument_name)
+                pattern_instruments["bearish + downclose"].add(instrument_name)
             else:
-                pattern_instruments["Downclose"].add(instrument_name)
+                pattern_instruments["downclose"].add(instrument_name)
     
     # Convert sets to sorted lists
     result = {}
@@ -549,14 +549,14 @@ Examples:
         
         # Define pattern order for display
         pattern_order = [
-            "Bullish engulfing + upclose",
-            "Bullish engulfing",
-            "Bullish + upclose",
-            "Bearish engulfing + downclose",
-            "Bearish engulfing",
-            "Bearish + downclose",
-            "Upclose",
-            "Downclose"
+            "bullish engulfing + upclose",
+            "bullish engulfing",
+            "bullish + upclose",
+            "bearish engulfing + downclose",
+            "bearish engulfing",
+            "bearish + downclose",
+            "upclose",
+            "downclose"
         ]
         
         # Display patterns in order
