@@ -76,6 +76,7 @@ def capture_endpoints(base_url: str = "http://localhost:8000", logger: logging.L
     
     # Map endpoint identifiers to URLs
     endpoint_url_map = {
+        "strength_weakness_daily": "/api/candle_analysis/api/v1/strength-weakness?period=daily",
         "strength_weakness_weekly": "/api/candle_analysis/api/v1/strength-weakness?period=weekly",
         "strength_weakness_monthly": "/api/candle_analysis/api/v1/strength-weakness?period=monthly",
         "pullback_weekly": "/api/candle_analysis/api/v1/pullback?period=weekly",
@@ -199,6 +200,8 @@ Examples:
 
 if __name__ == "__main__":
     main()
+
+
 
 
 

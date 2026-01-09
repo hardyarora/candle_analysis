@@ -12,6 +12,7 @@ from .config import (
     OANDA_API_URL,
     ACCESS_TOKEN,
     INSTRUMENTS,
+    DEFAULT_CANDLE_COUNT_DAILY,
     DEFAULT_CANDLE_COUNT_WEEKLY,
     DEFAULT_CANDLE_COUNT_MONTHLY,
     CURRENCY_FULL_NAMES,
@@ -545,8 +546,9 @@ def analyze_pullback_for_instrument(
     
     Args:
         instrument: Currency pair (e.g., "GBP_USD")
-        ignore_candles: Number of weekly candles to ignore at the end (default: 0)
+        ignore_candles: Number of candles to ignore at the end (default: 0)
         period: Aggregation period for the pullback range. Supported values:
+            - "daily": use daily candles
             - "weekly": use weekly candles
             - "monthly": use monthly candles
         
@@ -554,11 +556,14 @@ def analyze_pullback_for_instrument(
         Dictionary with pullback analysis data, or None if analysis fails
     """
     normalized_period = period.lower()
-    if normalized_period not in {"weekly", "monthly"}:
-        raise ValueError(f"Unsupported period: {period}. Expected 'weekly' or 'monthly'.")
+    if normalized_period not in {"daily", "weekly", "monthly"}:
+        raise ValueError(f"Unsupported period: {period}. Expected 'daily', 'weekly' or 'monthly'.")
 
     # Select granularity and candle count based on period
-    if normalized_period == "weekly":
+    if normalized_period == "daily":
+        granularity = "D"
+        candle_count = DEFAULT_CANDLE_COUNT_DAILY
+    elif normalized_period == "weekly":
         granularity = "W"
         candle_count = DEFAULT_CANDLE_COUNT_WEEKLY
     else:
@@ -703,6 +708,7 @@ def analyze_all_pullbacks(
         currency_filter: Optional currency code to filter by (e.g., "JPY")
         ignore_candles: Number of candles to ignore at the end for the selected period (default: 1)
         period: Aggregation period for the pullback range. Supported values:
+            - "daily": use daily candles
             - "weekly": use weekly candles
             - "monthly": use monthly candles
         
@@ -716,8 +722,8 @@ def analyze_all_pullbacks(
     # Normalize inputs for cache key
     cache_currency_filter = currency_filter.upper() if currency_filter else None
     normalized_period = period.lower() if period else "weekly"
-    if normalized_period not in {"weekly", "monthly"}:
-        raise ValueError(f"Unsupported period: {period}. Expected 'weekly' or 'monthly'.")
+    if normalized_period not in {"daily", "weekly", "monthly"}:
+        raise ValueError(f"Unsupported period: {period}. Expected 'daily', 'weekly' or 'monthly'.")
     
     # Create cache key
     cache_key = (cache_currency_filter, ignore_candles, normalized_period)

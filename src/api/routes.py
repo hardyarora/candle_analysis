@@ -317,7 +317,7 @@ async def get_pullback_analysis(
     ),
     period: str = Query(
         default="weekly",
-        description="Aggregation period for pullback analysis: 'weekly' or 'monthly' (default: 'weekly')",
+        description="Aggregation period for pullback analysis: 'daily', 'weekly' or 'monthly' (default: 'weekly')",
     ),
     force_oanda: bool = Query(default=False, description="Force loading from OANDA API instead of saved data"),
     date: Optional[str] = Query(None, description="Load historical data for a specific date (YYYY-MM-DD format). If provided, returns historical snapshot instead of computing fresh data."),
@@ -345,7 +345,7 @@ async def get_pullback_analysis(
     Args:
         currency: Optional currency code to filter by (e.g., "JPY" to show all JPY pairs)
         ignore_candles: Number of candles to ignore at the end for the selected period (default: 0)
-        period: Aggregation period for pullback analysis: "weekly" or "monthly"
+        period: Aggregation period for pullback analysis: "daily", "weekly" or "monthly"
         force_oanda: If True, force loading from OANDA API instead of saved data (default: False)
         date: Optional date string in YYYY-MM-DD format to load historical data
         
@@ -361,10 +361,10 @@ async def get_pullback_analysis(
     """
     try:
         normalized_period = period.lower() if period else "weekly"
-        if normalized_period not in {"weekly", "monthly"}:
+        if normalized_period not in {"daily", "weekly", "monthly"}:
             raise HTTPException(
                 status_code=400,
-                detail=f"Invalid period: {period}. Expected 'weekly' or 'monthly'.",
+                detail=f"Invalid period: {period}. Expected 'daily', 'weekly' or 'monthly'.",
             )
 
         # If date is provided, load from history
@@ -494,14 +494,14 @@ async def run_pullback_analysis(
 async def get_pullback_history(
     period: str = Query(
         default="weekly",
-        description="Aggregation period for pullback analysis: 'weekly' or 'monthly' (default: 'weekly')",
+        description="Aggregation period for pullback analysis: 'daily', 'weekly' or 'monthly' (default: 'weekly')",
     ),
 ):
     """
     Get list of available dates for historical pullback analysis.
     
     Args:
-        period: Aggregation period for pullback analysis: "weekly" or "monthly"
+        period: Aggregation period for pullback analysis: "daily", "weekly" or "monthly"
         
     Returns:
         HistoryDatesResponse with list of available dates and latest date
@@ -512,10 +512,10 @@ async def get_pullback_history(
     """
     try:
         normalized_period = period.lower() if period else "weekly"
-        if normalized_period not in {"weekly", "monthly"}:
+        if normalized_period not in {"daily", "weekly", "monthly"}:
             raise HTTPException(
                 status_code=400,
-                detail=f"Invalid period: {period}. Expected 'weekly' or 'monthly'.",
+                detail=f"Invalid period: {period}. Expected 'daily', 'weekly' or 'monthly'.",
             )
         
         endpoint_id = f"pullback_{normalized_period}"
@@ -543,7 +543,7 @@ async def get_historical_pullback(
     currency: Optional[str] = Query(None, description="Filter by currency code (e.g., JPY, USD, EUR)"),
     period: str = Query(
         default="weekly",
-        description="Aggregation period for pullback analysis: 'weekly' or 'monthly' (default: 'weekly')",
+        description="Aggregation period for pullback analysis: 'daily', 'weekly' or 'monthly' (default: 'weekly')",
     ),
 ):
     """
@@ -552,7 +552,7 @@ async def get_historical_pullback(
     Args:
         date: Date string in YYYY-MM-DD format
         currency: Optional currency code to filter by (e.g., "JPY" to show all JPY pairs)
-        period: Aggregation period for pullback analysis: "weekly" or "monthly"
+        period: Aggregation period for pullback analysis: "daily", "weekly" or "monthly"
         
     Returns:
         PullbackResponse with historical pullback analysis data
@@ -566,10 +566,10 @@ async def get_historical_pullback(
     """
     try:
         normalized_period = period.lower() if period else "weekly"
-        if normalized_period not in {"weekly", "monthly"}:
+        if normalized_period not in {"daily", "weekly", "monthly"}:
             raise HTTPException(
                 status_code=400,
-                detail=f"Invalid period: {period}. Expected 'weekly' or 'monthly'.",
+                detail=f"Invalid period: {period}. Expected 'daily', 'weekly' or 'monthly'.",
             )
         
         # Validate date format
@@ -626,7 +626,7 @@ async def get_strength_weakness_categorization(
     ),
     period: str = Query(
         default="weekly",
-        description="Aggregation period for pullback analysis: 'weekly' or 'monthly' (default: 'weekly')",
+        description="Aggregation period for pullback analysis: 'daily', 'weekly' or 'monthly' (default: 'weekly')",
     ),
     force_oanda: bool = Query(default=False, description="Force loading from OANDA API instead of saved data"),
 ):
@@ -646,7 +646,7 @@ async def get_strength_weakness_categorization(
     Args:
         currency: Optional currency code to filter by (e.g., "JPY" to show only JPY)
         ignore_candles: Number of candles to ignore at the end for the selected period (default: 0)
-        period: Aggregation period for pullback analysis: "weekly" or "monthly"
+        period: Aggregation period for pullback analysis: "daily", "weekly" or "monthly"
         force_oanda: If True, force loading from OANDA API instead of saved data (default: False)
         
     Returns:
@@ -656,14 +656,15 @@ async def get_strength_weakness_categorization(
         GET /api/v1/strength-weakness                                    # All currencies (weekly, from cache)
         GET /api/v1/strength-weakness?currency=JPY                       # Only JPY (weekly, from cache)
         GET /api/v1/strength-weakness?currency=USD&period=monthly         # Only USD, monthly (from cache)
+        GET /api/v1/strength-weakness?period=daily                        # Daily period (from cache)
         GET /api/v1/strength-weakness?period=weekly&force_oanda=true     # Weekly, force OANDA API
     """
     try:
         normalized_period = period.lower() if period else "weekly"
-        if normalized_period not in {"weekly", "monthly"}:
+        if normalized_period not in {"daily", "weekly", "monthly"}:
             raise HTTPException(
                 status_code=400,
-                detail=f"Invalid period: {period}. Expected 'weekly' or 'monthly'.",
+                detail=f"Invalid period: {period}. Expected 'daily', 'weekly' or 'monthly'.",
             )
 
         logger.info(f"Getting strength/weakness categorization: currency={currency}, ignore_candles={ignore_candles}, period={normalized_period}, force_oanda={force_oanda}")
@@ -765,7 +766,7 @@ async def run_strength_weakness_categorization(
         {
             "currency": "JPY",
             "ignore_candles": 0,
-            "period": "weekly"
+            "period": "daily"
         }
     """
     try:
@@ -1041,6 +1042,7 @@ async def capture_history(
     # If not specified, we'll need to fetch from actual endpoints
     # For now, we'll define a default list
     endpoints_to_capture = request_body.endpoints or [
+        "strength_weakness_daily",
         "strength_weakness_weekly",
         "strength_weakness_monthly",
         "pullback_weekly",
@@ -1056,6 +1058,7 @@ async def capture_history(
     
     # Map endpoint identifiers back to URLs
     endpoint_url_map = {
+        "strength_weakness_daily": "/api/v1/strength-weakness?period=daily",
         "strength_weakness_weekly": "/api/v1/strength-weakness?period=weekly",
         "strength_weakness_monthly": "/api/v1/strength-weakness?period=monthly",
         "pullback_weekly": "/api/v1/pullback?period=weekly",
